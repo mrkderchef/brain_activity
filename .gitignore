@@ -1,0 +1,33 @@
+# Data directories (large EEG/BIDS datasets)
+ds003768-download/
+ds003768-master/
+ds003768-master.zip
+
+# Output files
+outputs/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+dist/
+build/
+.eggs/
+*.egg
+
+# Virtual environments
+venv/
+.venv/
+env/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# OS
+Thumbs.db
+.DS_Store
+
+# IDE
+.vscode/
+.idea/
