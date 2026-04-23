@@ -122,6 +122,10 @@ def load_sleep_stages(sourcedata_dir):
     for f in tsv_files:
         df = pd.read_csv(f, sep='\t')
         df.columns = df.columns.str.strip()
+        # Subject-ID aus Dateiname extrahieren (nicht alle TSVs haben eine 'subject'-Spalte)
+        fname = Path(f).stem  # z.B. "sub-02-sleep-stage"
+        sub_id = int(fname.split('-')[1])  # → 2
+        df['subject'] = sub_id
         df['stage_str'] = df['30-sec_epoch_sleep_stage'].astype(str).str.strip()
         df['stage_int'] = df['stage_str'].map(SLEEP_STAGE_MAP)
         frames.append(df)
