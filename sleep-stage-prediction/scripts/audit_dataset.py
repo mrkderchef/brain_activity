@@ -92,6 +92,8 @@ def main() -> None:
     eeg_without_clean_labels = sorted(eeg_keys - clean_keys)
 
     aligned_rows = []
+    short_recordings = []
+    truncation_loss_counts = {"W": 0, "1": 0, "2": 0, "3": 0}
     for record in eeg_records:
         labels = clean[(clean["subject"] == record["subject"]) & (clean["session"] == record["session"])].sort_values(
             "epoch_start_time_sec"
@@ -99,6 +101,19 @@ def main() -> None:
         if len(labels) == 0:
             continue
         signal_epochs = count_signal_epochs(record["vhdr_path"])
+        if len(labels) > signal_epochs:
+            dropped_tail = labels.iloc[signal_epochs:]["stage_str"].value_counts().to_dict()
+            short_recordings.append(
+                {
+                    "key": record["key"],
+                    "label_epochs": int(len(labels)),
+                    "signal_epochs": int(signal_epochs),
+                    "missing_tail_epochs": int(len(labels) - signal_epochs),
+                    "tail_stage_counts": {key: int(value) for key, value in dropped_tail.items()},
+                }
+            )
+            for key, value in dropped_tail.items():
+                truncation_loss_counts[key] += int(value)
         aligned_rows.append(
             {
                 "key": record["key"],
@@ -131,6 +146,8 @@ def main() -> None:
         "eeg_without_clean_labels": eeg_without_clean_labels,
         "sum_label_epochs_for_recordings": int(sum(row["label_epochs"] for row in aligned_rows)),
         "sum_signal_epochs_for_recordings": int(sum(row["signal_epochs"] for row in aligned_rows)),
+        "short_recordings": short_recordings,
+        "truncation_loss_counts": truncation_loss_counts,
         "subjects_with_n3": sorted(clean.loc[clean["stage_str"] == "3", "subject"].unique().tolist()),
         "extracted_total_rows": extracted_total,
         "extracted_stage_counts": extracted_counts,

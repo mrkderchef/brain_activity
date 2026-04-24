@@ -122,7 +122,7 @@ Total difference:
 - saved output rows: `6773`
 - missing after extraction: `85`
 
-### 5. The mismatch is probably not caused by recording length
+### 5. Recording length explains part of the mismatch
 
 A fast audit based on BrainVision header metadata and `.eeg` file sizes showed:
 
@@ -130,7 +130,27 @@ A fast audit based on BrainVision header metadata and `.eeg` file sizes showed:
 - sum of clean labeled epochs across those recordings: `6858`
 - sum of available 30-second signal windows across those recordings: `7111`
 
-This means the raw recordings are, in aggregate, long enough to cover the clean label tables. That argues against the `85` missing rows being caused by too-short recordings.
+This means the raw recordings are, in aggregate, long enough to cover the clean label tables. However, the aggregate view hides some recording-specific truncation.
+
+Four `sub-16` sleep recordings are shorter than their clean label tables:
+
+| Recording | Clean labels | Signal epochs | Missing tail epochs |
+|---|---:|---:|---:|
+| `sub-16_task-sleep_run-2` | 30 | 20 | 10 |
+| `sub-16_task-sleep_run-3` | 30 | 21 | 9 |
+| `sub-16_task-sleep_run-4` | 30 | 17 | 13 |
+| `sub-16_task-sleep_run-5` | 30 | 17 | 13 |
+
+These four truncated recordings explain `45` of the `85` missing rows exactly.
+
+The class loss from those truncated tails is:
+
+| Stage | Missing from truncation |
+|---|---:|
+| Wake | 2 |
+| N1 | 8 |
+| N2 | 35 |
+| N3 | 0 |
 
 Because the extraction pipeline ends with:
 
@@ -139,16 +159,28 @@ mask = np.all(np.isfinite(X), axis=1)
 X, y = X[mask], y[mask]
 ```
 
-the most plausible explanation is:
+After subtracting the `45` truncation-driven losses from the total mismatch, there is still a residual unexplained loss of `40` epochs:
 
-- some extracted epochs produced non-finite features
-- those rows were removed silently by the finite-value filter
+| Stage | Residual unexplained loss |
+|---|---:|
+| Wake | 0 |
+| N1 | 11 |
+| N2 | 29 |
+| N3 | 0 |
 
-This hypothesis also matches the arithmetic exactly:
+The most plausible explanations for this residual are:
 
-- `6858 clean label rows`
-- minus `85 filtered-out rows`
-- equals `6773 saved rows`
+- some extracted epochs produced non-finite features and were removed silently by the finite-value filter
+- or a small number of recordings/segments failed during the older extraction run that produced the current `X_features.npy` and `y_labels.npy`
+
+One exact decomposition of the residual `40` epochs exists as whole-recording omission:
+
+- `sub-16_task-rest_run-1` contributes `N1: 3`, `N2: 17`
+- `sub-24_task-rest_run-2` contributes `N1: 8`, `N2: 12`
+
+Together these two recordings match the residual `N1: 11`, `N2: 29`.
+
+This is not yet proven, but it is a concrete hypothesis consistent with the saved output counts.
 
 ## Current Model Status
 
@@ -188,14 +220,15 @@ Most likely causes:
 
 ### Missing 85 extracted rows
 
-Most likely cause:
+Current best explanation:
 
-- non-finite feature vectors removed by `np.isfinite` filtering after extraction
+- `45` rows are lost because four `sub-16` recordings are shorter than their label tables
+- the remaining `40` rows were likely lost either through non-finite feature filtering or through one or more recording-level failures in the older extraction run
 
 Still not fully proven:
 
-- which exact recordings/epochs produce those non-finite values
-- whether the non-finite values come from raw EEG NaNs, flat segments, numerical instability, or a small number of problematic files
+- which exact recordings/epochs account for the final residual `40`
+- whether that residual comes from non-finite feature rows, a failed recording load, or another bookkeeping issue in the previous extraction run
 
 ## Thesis-Safe Conclusions
 

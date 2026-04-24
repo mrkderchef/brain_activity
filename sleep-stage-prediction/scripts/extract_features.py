@@ -38,6 +38,7 @@ def main() -> None:
 
     all_X = []
     all_y = []
+    epoch_metadata_rows = []
     dropped_epoch_records = []
     extraction_summary = []
 
@@ -68,6 +69,16 @@ def main() -> None:
 
         all_X.append(X_aligned[finite_mask])
         all_y.append(y_aligned[finite_mask])
+        kept_indices = np.where(finite_mask)[0]
+        for kept_idx in kept_indices:
+            epoch_metadata_rows.append(
+                {
+                    "subject": record["subject_str"],
+                    "session": record["session"],
+                    "epoch_index": int(kept_idx),
+                    "label": int(y_aligned[kept_idx]),
+                }
+            )
         extraction_summary.append(
             {
                 "subject": record["subject_str"],
@@ -91,6 +102,7 @@ def main() -> None:
 
     np.save(os.path.join(output_dir, "X_features.npy"), X)
     np.save(os.path.join(output_dir, "y_labels.npy"), y)
+    pd.DataFrame(epoch_metadata_rows).to_csv(os.path.join(output_dir, "epoch_metadata.csv"), index=False)
     pd.DataFrame(extraction_summary).to_csv(os.path.join(output_dir, "extraction_summary.csv"), index=False)
     pd.DataFrame(dropped_epoch_records).to_csv(os.path.join(output_dir, "dropped_epochs.csv"), index=False)
     with open(os.path.join(output_dir, "extraction_audit.json"), "w", encoding="utf-8") as handle:
@@ -99,6 +111,7 @@ def main() -> None:
                 "total_recordings_with_labels": len(extraction_summary),
                 "total_kept_rows": int(len(y)),
                 "total_dropped_nonfinite_rows": int(len(dropped_epoch_records)),
+                "epoch_metadata_rows": int(len(epoch_metadata_rows)),
             },
             handle,
             indent=2,
