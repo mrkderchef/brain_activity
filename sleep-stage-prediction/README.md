@@ -1,0 +1,78 @@
+# Sleep Stage Prediction
+
+Local-first sleep stage classification from EEG band-power features using the `ds003768` dataset.
+
+## What this project does
+
+- extracts 30-second EEG epochs into frequency-band features
+- trains a Random Forest sleep stage classifier
+- saves metrics, plots, and a serialized model
+- exports CSVs for TVB-style visualization
+
+## Project layout
+
+```text
+sleep-stage-prediction/
+  legacy/                 Old Kaggle-specific artifacts kept out of the main workflow
+  outputs/                Generated features, models, metrics, and plots
+  scripts/                CLI entrypoints for extraction, training, and visualization
+  src/sleep_stage_prediction/
+                          Reusable package code
+  README.md
+  pyproject.toml
+  requirements.txt
+```
+
+## Setup
+
+```bash
+python -m venv .venv
+.venv\Scripts\activate
+pip install -r requirements.txt
+pip install -e .
+```
+
+## Local workflow
+
+1. Extract features from a local `ds003768` checkout:
+
+```bash
+python scripts/extract_features.py --bids-root ..\ds003768 --output-dir outputs
+```
+
+2. Train from the extracted `.npy` files:
+
+```bash
+python scripts/train_model.py --features-path outputs\X_features.npy --labels-path outputs\y_labels.npy --output-dir outputs
+```
+
+3. Optionally run the full pipeline in one command:
+
+```bash
+python scripts/run_pipeline.py --bids-root ..\ds003768 --output-dir outputs
+```
+
+4. Render TVB-style plots from an existing export:
+
+```bash
+python scripts/visualize_tvb.py --export-dir outputs\tvb_export
+```
+
+## Outputs
+
+Training writes the following files into `outputs/`:
+
+- `X_features.npy`
+- `y_labels.npy`
+- `sleep_stage_model.joblib`
+- `metrics.json`
+- `*.png`
+- `tvb_export/*.csv`
+
+## Notes
+
+- The active workflow is local-only. Kaggle assets were moved to `legacy/kaggle/`.
+- `outputs/` is generated project state, not source code.
+- If `.eeg` files are still annex pointers, extraction will not work until the real binaries are present.
+- For the current `ds003768` workflow, the practical label space is `Wake`, `N1`, `N2`, and `N3`. REM is not present in the source TSV labels.
+- See `docs/current_data_audit.md` for the current data-quality and class-balance findings.
