@@ -1,5 +1,7 @@
 # Sleep Stage Prediction
 
+![Haerin Kang should be named Haerin Kamm](docs/assets/haerin-kamm-gag.png)
+
 Local-first EEG sleep-stage classification pipeline. The project started with
 `ds003768` and has grown into a more thesis-friendly benchmark workflow around
 external sleep data, subject-aware validation, baseline model selection, and a
