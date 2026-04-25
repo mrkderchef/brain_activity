@@ -210,6 +210,34 @@ Results on `ds006695` only, balanced to 400 per class across five subjects:
 
 Interpretation: normalization helps under subject-wise validation. The hardest class remains N1, which is expected because N1 is a transitional and often ambiguous sleep stage.
 
+## Sequence Context Pass
+
+Added neighboring-epoch context features:
+
+- previous epoch features
+- current epoch features
+- next epoch features
+- previous-to-current deltas
+- current-to-next deltas
+
+With 21 base/augmented features this creates 105 features per epoch for a `window=1` context.
+
+Results on `ds006695` only, balanced to 400 per class across five subjects:
+
+| Feature set / validation | Features | Accuracy | Balanced accuracy | Kappa | Macro F1 |
+|---|---:|---:|---:|---:|---:|
+| Augmented + normalized, subject-wise 5-fold group CV | 21 | 0.4560 | 0.4560 | 0.3200 | 0.43 |
+| Sequence context + augmented + normalized, subject-wise 5-fold group CV | 105 | 0.5045 | 0.5045 | 0.3806 | 0.48 |
+
+Results on the 800-per-class mixed pool:
+
+| Feature set / validation | Features | Accuracy | Balanced accuracy | Kappa | Macro F1 |
+|---|---:|---:|---:|---:|---:|
+| Augmented + normalized, group 3-fold CV | 21 | 0.3738 | 0.3738 | 0.2172 | 0.29 |
+| Sequence context + augmented + normalized, group 3-fold CV | 105 | 0.3952 | 0.3952 | 0.2441 | 0.30 |
+
+Interpretation: temporal context helps under honest group-aware validation. The gain is clearer inside `ds006695` than in the mixed pool, because the mixed pool still has class/dataset confounding: REM is only from `ds006695`, and `ds003768` metadata is incomplete for subject-level grouping.
+
 ## Sources
 
 - EEGDash `ds003768`: https://eegdash.org/api/dataset/eegdash.dataset.DS003768.html
