@@ -1,8 +1,6 @@
 """Feature extraction for sleep stage classification."""
 
 from __future__ import annotations
-
-import mne
 import numpy as np
 from scipy.integrate import trapezoid
 from scipy.signal import welch

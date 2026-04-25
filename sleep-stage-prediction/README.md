@@ -40,6 +40,25 @@ pip install -e .
 python scripts/extract_features.py --bids-root ..\ds003768 --output-dir outputs
 ```
 
+For an external BIDS sleep dataset with per-recording `_events.tsv` labels:
+
+```bash
+python scripts\download_openneuro_subset.py --dataset ds006695 --target-dir ..\ds006695 --subject 126
+python scripts/extract_external_bids_sleep.py --bids-root ..\ds006695 --dataset-id ds006695 --preset ds006695 --output-dir outputs\ds006695_features
+```
+
+For Sleep-EDF Expanded after downloading the BIDS mirror:
+
+```bash
+python scripts/extract_external_bids_sleep.py --bids-root ..\NM000185 --dataset-id NM000185 --output-dir outputs\sleep_edf_features
+```
+
+Combine the current feature set with an external feature set:
+
+```bash
+python scripts\combine_feature_sets.py --feature-dir outputs --dataset-id ds003768 --feature-dir outputs\ds006695_features --dataset-id ds006695 --output-dir outputs\combined_ds003768_ds006695
+```
+
 2. Train from the extracted `.npy` files:
 
 ```bash
@@ -76,3 +95,4 @@ Training writes the following files into `outputs/`:
 - If `.eeg` files are still annex pointers, extraction will not work until the real binaries are present.
 - For the current `ds003768` workflow, the practical label space is `Wake`, `N1`, `N2`, and `N3`. REM is not present in the source TSV labels.
 - See `docs/current_data_audit.md` for the current data-quality and class-balance findings.
+- See `docs/openneuro_dataset_research.md` for candidate external datasets and integration caveats.
