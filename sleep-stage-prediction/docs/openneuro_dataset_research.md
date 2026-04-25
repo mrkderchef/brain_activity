@@ -331,6 +331,142 @@ Best result by balanced accuracy in the N1-focused sweep:
 
 Interpretation: lowering the N1 decision threshold can substantially increase N1 recall, from roughly `0.19` to `0.79`, but this reduces balanced accuracy from roughly `0.54` to `0.43`. This is not a better default classifier yet; it is a useful sensitivity analysis if the thesis wants to emphasize detecting N1 rather than optimizing balanced 5-class performance.
 
+## N1 Error Analysis and Transition Features
+
+Added three follow-up scripts:
+
+- `scripts/analyze_n1_errors.py`
+- `scripts/add_transition_features.py`
+- `scripts/compare_group_models.py`
+
+The N1 error analysis runs the same subject-wise `StratifiedGroupKFold` as the model benchmark and saves per-epoch predictions with true neighboring-stage context. On the previous best sequence-context feature set, N1 errors were:
+
+| True N1 outcome | Count |
+|---|---:|
+| Correctly predicted N1 | 308 |
+| False negatives | 1292 |
+
+N1 false negatives were predicted as:
+
+| Predicted stage | Count |
+|---|---:|
+| N2 | 451 |
+| REM | 435 |
+| Wake | 286 |
+| N3 | 120 |
+
+This confirms that N1 is not only rare; it is being confused with both neighboring NREM sleep and REM-like low-amplitude/transitional patterns.
+
+The transition-feature script adds label-free rolling features within each subject/recording:
+
+- centered 5-epoch and 9-epoch rolling means
+- centered rolling standard deviations
+- centered rolling slopes
+- current-minus-local-mean deviations
+
+These features expand the all-19 normalized `ds006695` benchmark from `21` to `189` features per epoch.
+
+Subject-wise 5-fold model comparison:
+
+| Feature set | Model | Features | Accuracy | Balanced accuracy | Kappa | Macro F1 | N1 precision | N1 recall | N1 F1 |
+|---|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| Sequence context | Random Forest | 105 | 0.5394 | 0.5394 | 0.4242 | 0.5248 | 0.3136 | 0.1925 | 0.2386 |
+| Sequence context | Extra Trees | 105 | 0.5394 | 0.5394 | 0.4242 | 0.5177 | 0.3096 | 0.1494 | 0.2015 |
+| Sequence context | Gradient Boosting | 105 | 0.5223 | 0.5223 | 0.4028 | 0.5146 | 0.2874 | 0.2344 | 0.2582 |
+| Transition features | Random Forest | 189 | 0.5458 | 0.5458 | 0.4322 | 0.5332 | 0.3102 | 0.2038 | 0.2459 |
+| Transition features | Extra Trees | 189 | 0.5364 | 0.5364 | 0.4205 | 0.5186 | 0.2834 | 0.1563 | 0.2015 |
+| Transition features | Fast Gradient Boosting | 189 | 0.5281 | 0.5281 | 0.4102 | 0.5186 | 0.2805 | 0.2081 | 0.2390 |
+| Sequence context | Fast HistGradientBoosting | 105 | 0.5189 | 0.5189 | 0.3986 | 0.5100 | 0.2714 | 0.2100 | 0.2368 |
+| Transition features | Fast HistGradientBoosting | 189 | 0.5288 | 0.5288 | 0.4109 | 0.5234 | 0.2802 | 0.2363 | 0.2564 |
+
+Best default after this pass:
+
+- Transition features + Random Forest
+- Balanced accuracy: `0.5458`
+- Macro F1: `0.5332`
+- N1 recall: `0.2038`
+- N1 F1: `0.2459`
+
+Interpretation: transition features give a small but honest improvement over the previous sequence-context Random Forest. However, N1 remains the limiting class. The best N1 F1 still comes from explicit threshold tuning, while the best balanced 5-class model is now the transition-feature Random Forest.
+
+Additional note: fast `HistGradientBoostingClassifier` is now supported in `scripts/compare_group_models.py`. It improved N1 recall on the transition features compared with Random Forest (`0.2363` vs `0.2038`) but did not beat Random Forest on balanced 5-class performance.
+
+### External Gradient-Boosting Models
+
+Added optional support for:
+
+- XGBoost: `xgboost`
+- LightGBM: `lightgbm`
+- CatBoost: `catboost`
+
+These can be installed with:
+
+```bash
+pip install -e .[gbm]
+```
+
+Subject-wise 5-fold comparison on transition features:
+
+| Feature set | Model | Features | Accuracy | Balanced accuracy | Kappa | Macro F1 | N1 precision | N1 recall | N1 F1 |
+|---|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| Transition features | XGBoost | 189 | 0.5328 | 0.5328 | 0.4159 | 0.5248 | 0.2916 | 0.2256 | 0.2544 |
+| Transition features | LightGBM | 189 | 0.5320 | 0.5320 | 0.4150 | 0.5278 | 0.2916 | 0.2519 | 0.2703 |
+| Transition features | CatBoost | 189 | 0.5435 | 0.5435 | 0.4294 | 0.5320 | 0.3037 | 0.2025 | 0.2430 |
+
+LightGBM was also checked on the previous sequence-context feature set:
+
+| Feature set | Model | Features | Accuracy | Balanced accuracy | Kappa | Macro F1 | N1 precision | N1 recall | N1 F1 |
+|---|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| Sequence context | LightGBM | 105 | 0.5228 | 0.5228 | 0.4034 | 0.5171 | 0.2789 | 0.2369 | 0.2562 |
+
+Interpretation: CatBoost is closest to Random Forest on balanced 5-class performance, but LightGBM gives the best N1 F1 so far without post-hoc thresholding (`0.2703`). The best overall balanced model remains transition-feature Random Forest (`0.5458`), while the best N1-sensitive non-threshold model is transition-feature LightGBM.
+
+### Random Forest Optuna Tuning
+
+Added:
+
+- `scripts/tune_random_forest_optuna.py`
+
+The tuner uses Optuna with the same subject-wise `StratifiedGroupKFold` validation. It supports three objectives:
+
+- `balanced_accuracy`
+- `n1_f1`
+- `combined`, defined as a weighted mix of balanced accuracy and N1 F1
+
+The first broad search was too expensive for this dataset: a wide `max_features`/tree-count search only completed two trials in about 30 minutes. The script now defaults to a `fast` search space and writes `optuna_trials_partial.csv` after every trial so long runs leave recoverable results.
+
+Fast 10-trial Optuna run on transition features with objective `combined` and N1 weight `0.35`:
+
+| Objective | Trials | Best trial | Accuracy | Balanced accuracy | Kappa | Macro F1 | N1 precision | N1 recall | N1 F1 |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| Combined | 10 | 6 | 0.5230 | 0.5230 | 0.4038 | 0.5294 | 0.2882 | 0.3981 | 0.3344 |
+
+Best combined-trial RF parameters:
+
+| Parameter | Value |
+|---|---:|
+| `n_estimators` | 200 |
+| `max_depth` | 12 |
+| `min_samples_leaf` | 2 |
+| `min_samples_split` | 18 |
+| `max_features` | `log2` |
+| `max_samples` | 0.8 |
+| N1 class weight | 1.75 |
+
+The same 10-trial table also contained an even more N1-sensitive RF configuration:
+
+| Trial | Accuracy | Balanced accuracy | Macro F1 | N1 precision | N1 recall | N1 F1 |
+|---:|---:|---:|---:|---:|---:|---:|
+| 1 | 0.5155 | 0.5155 | 0.5239 | 0.2874 | 0.4356 | 0.3463 |
+
+Short 8-trial Optuna run using `balanced_accuracy` as the objective:
+
+| Objective | Trials | Best trial | Accuracy | Balanced accuracy | Kappa | Macro F1 | N1 precision | N1 recall | N1 F1 |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| Balanced accuracy | 8 | 4 | 0.5365 | 0.5365 | 0.4206 | 0.5345 | 0.2983 | 0.2888 | 0.2934 |
+
+Interpretation: Optuna did not beat the current best default Random Forest on balanced 5-class performance (`0.5458`). It did, however, find much better N1-sensitive Random Forest variants. Compared with the current transition-feature RF baseline, N1 F1 improved from `0.2459` to `0.3344` in the balanced/N1 combined setting, and up to `0.3463` in the most N1-sensitive observed trial. This makes tuned RF useful as a secondary sensitivity model, while the untuned transition-feature RF remains the best balanced default.
+
 ## Sources
 
 - EEGDash `ds003768`: https://eegdash.org/api/dataset/eegdash.dataset.DS003768.html

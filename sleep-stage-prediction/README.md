@@ -32,6 +32,18 @@ pip install -r requirements.txt
 pip install -e .
 ```
 
+Optional external gradient-boosting models:
+
+```bash
+pip install -e .[gbm]
+```
+
+Optional hyperparameter tuning:
+
+```bash
+pip install -e .[tuning]
+```
+
 ## Local workflow
 
 1. Extract features from a local `ds003768` checkout:
@@ -73,6 +85,26 @@ For an N1-focused sensitivity/recall experiment on a prepared feature set:
 
 ```bash
 python scripts\evaluate_n1_focus.py --features-path outputs\ds006695_augmented_balanced_1600_all19_normalized_seq1\X_features.npy --labels-path outputs\ds006695_augmented_balanced_1600_all19_normalized_seq1\y_labels.npy --metadata-path outputs\ds006695_augmented_balanced_1600_all19_normalized_seq1\epoch_metadata.csv --output-dir outputs\ds006695_augmented_balanced_1600_all19_normalized_seq1_n1_focus --n-splits 5
+```
+
+For N1 error analysis, transition features, and model comparison:
+
+```bash
+python scripts\analyze_n1_errors.py --features-path outputs\ds006695_augmented_balanced_1600_all19_normalized_seq1\X_features.npy --labels-path outputs\ds006695_augmented_balanced_1600_all19_normalized_seq1\y_labels.npy --metadata-path outputs\ds006695_augmented_balanced_1600_all19_normalized_seq1\epoch_metadata.csv --output-dir outputs\ds006695_augmented_balanced_1600_all19_normalized_seq1_n1_errors --n-splits 5
+python scripts\add_transition_features.py --features-path outputs\ds006695_augmented_balanced_1600_all19_normalized\X_features.npy --labels-path outputs\ds006695_augmented_balanced_1600_all19_normalized\y_labels.npy --metadata-path outputs\ds006695_augmented_balanced_1600_all19_normalized\epoch_metadata.csv --output-dir outputs\ds006695_augmented_balanced_1600_all19_normalized_transition --radii 2,4
+python scripts\compare_group_models.py --features-path outputs\ds006695_augmented_balanced_1600_all19_normalized_transition\X_features.npy --labels-path outputs\ds006695_augmented_balanced_1600_all19_normalized_transition\y_labels.npy --metadata-path outputs\ds006695_augmented_balanced_1600_all19_normalized_transition\epoch_metadata.csv --output-dir outputs\ds006695_augmented_balanced_1600_all19_normalized_transition_model_compare --n-splits 5 --models random_forest,extra_trees
+```
+
+External GBM models can be compared after installing the optional `gbm` dependencies:
+
+```bash
+python scripts\compare_group_models.py --features-path outputs\ds006695_augmented_balanced_1600_all19_normalized_transition\X_features.npy --labels-path outputs\ds006695_augmented_balanced_1600_all19_normalized_transition\y_labels.npy --metadata-path outputs\ds006695_augmented_balanced_1600_all19_normalized_transition\epoch_metadata.csv --output-dir outputs\ds006695_augmented_balanced_1600_all19_normalized_transition_external_gbms --n-splits 5 --models xgboost,lightgbm,catboost
+```
+
+Random Forest hyperparameters can be tuned with Optuna after installing the optional `tuning` dependency:
+
+```bash
+python scripts\tune_random_forest_optuna.py --features-path outputs\ds006695_augmented_balanced_1600_all19_normalized_transition\X_features.npy --labels-path outputs\ds006695_augmented_balanced_1600_all19_normalized_transition\y_labels.npy --metadata-path outputs\ds006695_augmented_balanced_1600_all19_normalized_transition\epoch_metadata.csv --output-dir outputs\ds006695_augmented_balanced_1600_all19_normalized_transition_rf_optuna_fast10 --n-splits 5 --n-trials 10 --objective combined --combined-n1-weight 0.35 --search-space fast
 ```
 
 2. Train from the extracted `.npy` files:

@@ -19,6 +19,16 @@ dependencies = [
   "seaborn",
 ]
 
+[project.optional-dependencies]
+gbm = [
+  "catboost",
+  "lightgbm",
+  "xgboost",
+]
+tuning = [
+  "optuna",
+]
+
 [tool.setuptools]
 package-dir = {"" = "src"}
 
