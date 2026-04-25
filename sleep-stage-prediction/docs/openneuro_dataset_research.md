@@ -297,6 +297,40 @@ Subject-wise 5-fold group CV on all 19 `ds006695` subjects:
 
 Interpretation: adding the remaining `ds006695` subjects materially improves the honest subject-wise benchmark. Sequence context remains useful at the larger scale. N1 is still the limiting class, with recall around 0.19 in the current Random Forest setup.
 
+## N1-Focused Evaluation
+
+Added an N1-focused evaluation script:
+
+- `scripts/evaluate_n1_focus.py`
+
+The script keeps subject-wise `StratifiedGroupKFold`, then compares:
+
+- explicit N1 class upweighting
+- post-hoc N1 probability thresholds
+
+Run on:
+
+- `outputs/ds006695_augmented_balanced_1600_all19_normalized_seq1`
+
+Output:
+
+- `outputs/ds006695_augmented_balanced_1600_all19_normalized_seq1_n1_focus/n1_focus_summary.csv`
+- `outputs/ds006695_augmented_balanced_1600_all19_normalized_seq1_n1_focus/n1_focus_metrics.json`
+
+Best result by N1 F1:
+
+| Strategy | N1 weight | N1 threshold | Accuracy | Balanced accuracy | Macro F1 | N1 precision | N1 recall | N1 F1 |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| N1 threshold | 2.0 | 0.20 | 0.4319 | 0.4319 | 0.4188 | 0.2643 | 0.7906 | 0.3962 |
+
+Best result by balanced accuracy in the N1-focused sweep:
+
+| Strategy | N1 weight | N1 threshold | Accuracy | Balanced accuracy | Macro F1 | N1 precision | N1 recall | N1 F1 |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| Argmax | 1.0 | n/a | 0.5411 | 0.5411 | 0.5266 | 0.3191 | 0.1969 | 0.2435 |
+
+Interpretation: lowering the N1 decision threshold can substantially increase N1 recall, from roughly `0.19` to `0.79`, but this reduces balanced accuracy from roughly `0.54` to `0.43`. This is not a better default classifier yet; it is a useful sensitivity analysis if the thesis wants to emphasize detecting N1 rather than optimizing balanced 5-class performance.
+
 ## Sources
 
 - EEGDash `ds003768`: https://eegdash.org/api/dataset/eegdash.dataset.DS003768.html

@@ -69,6 +69,12 @@ python scripts\add_sequence_context.py --features-path outputs\balanced_800_augm
 python scripts\train_group_model.py --features-path outputs\balanced_800_augmented_normalized\X_features.npy --labels-path outputs\balanced_800_augmented_normalized\y_labels.npy --metadata-path outputs\balanced_800_augmented_normalized\epoch_metadata.csv --output-dir outputs\balanced_800_augmented_normalized_group_cv --n-splits 3
 ```
 
+For an N1-focused sensitivity/recall experiment on a prepared feature set:
+
+```bash
+python scripts\evaluate_n1_focus.py --features-path outputs\ds006695_augmented_balanced_1600_all19_normalized_seq1\X_features.npy --labels-path outputs\ds006695_augmented_balanced_1600_all19_normalized_seq1\y_labels.npy --metadata-path outputs\ds006695_augmented_balanced_1600_all19_normalized_seq1\epoch_metadata.csv --output-dir outputs\ds006695_augmented_balanced_1600_all19_normalized_seq1_n1_focus --n-splits 5
+```
+
 2. Train from the extracted `.npy` files:
 
 ```bash
