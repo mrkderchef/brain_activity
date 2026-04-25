@@ -238,6 +238,65 @@ Results on the 800-per-class mixed pool:
 
 Interpretation: temporal context helps under honest group-aware validation. The gain is clearer inside `ds006695` than in the mixed pool, because the mixed pool still has class/dataset confounding: REM is only from `ds006695`, and `ds003768` metadata is incomplete for subject-level grouping.
 
+## Full `ds006695` Collection
+
+Downloaded and extracted all 19 available `ds006695` subjects:
+
+- `101`
+- `102`
+- `104`
+- `105`
+- `106`
+- `107`
+- `109`
+- `110`
+- `111`
+- `112`
+- `114`
+- `116`
+- `117`
+- `119`
+- `122`
+- `123`
+- `124`
+- `125`
+- `126`
+
+Full extracted pool:
+
+| Stage | Count |
+|---|---:|
+| Wake | 3061 |
+| N1 | 1600 |
+| N2 | 7691 |
+| N3 | 3737 |
+| REM | 3474 |
+
+Because N1 is the rarest class, the clean balanced cap is now 1600 epochs per class:
+
+| Stage | Count |
+|---|---:|
+| Wake | 1600 |
+| N1 | 1600 |
+| N2 | 1600 |
+| N3 | 1600 |
+| REM | 1600 |
+
+Balanced all-19 output:
+
+- `outputs/ds006695_augmented_balanced_1600_all19`
+- `outputs/ds006695_augmented_balanced_1600_all19_normalized`
+- `outputs/ds006695_augmented_balanced_1600_all19_normalized_seq1`
+
+Subject-wise 5-fold group CV on all 19 `ds006695` subjects:
+
+| Feature set / validation | Features | Subjects | Samples | Accuracy | Balanced accuracy | Kappa | Macro F1 |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| Augmented + normalized | 21 | 19 | 8000 | 0.4866 | 0.4866 | 0.3583 | 0.48 |
+| Sequence context + augmented + normalized | 105 | 19 | 8000 | 0.5394 | 0.5394 | 0.4242 | 0.52 |
+
+Interpretation: adding the remaining `ds006695` subjects materially improves the honest subject-wise benchmark. Sequence context remains useful at the larger scale. N1 is still the limiting class, with recall around 0.19 in the current Random Forest setup.
+
 ## Sources
 
 - EEGDash `ds003768`: https://eegdash.org/api/dataset/eegdash.dataset.DS003768.html
