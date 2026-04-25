@@ -44,6 +44,12 @@ Optional hyperparameter tuning:
 pip install -e .[tuning]
 ```
 
+Optional deep-learning spectrogram models:
+
+```bash
+pip install -e .[deep]
+```
+
 ## Local workflow
 
 1. Extract features from a local `ds003768` checkout:
@@ -91,8 +97,8 @@ For N1 error analysis, transition features, and model comparison:
 
 ```bash
 python scripts\analyze_n1_errors.py --features-path outputs\ds006695_augmented_balanced_1600_all19_normalized_seq1\X_features.npy --labels-path outputs\ds006695_augmented_balanced_1600_all19_normalized_seq1\y_labels.npy --metadata-path outputs\ds006695_augmented_balanced_1600_all19_normalized_seq1\epoch_metadata.csv --output-dir outputs\ds006695_augmented_balanced_1600_all19_normalized_seq1_n1_errors --n-splits 5
-python scripts\add_transition_features.py --features-path outputs\ds006695_augmented_balanced_1600_all19_normalized\X_features.npy --labels-path outputs\ds006695_augmented_balanced_1600_all19_normalized\y_labels.npy --metadata-path outputs\ds006695_augmented_balanced_1600_all19_normalized\epoch_metadata.csv --output-dir outputs\ds006695_augmented_balanced_1600_all19_normalized_transition --radii 2,4
-python scripts\compare_group_models.py --features-path outputs\ds006695_augmented_balanced_1600_all19_normalized_transition\X_features.npy --labels-path outputs\ds006695_augmented_balanced_1600_all19_normalized_transition\y_labels.npy --metadata-path outputs\ds006695_augmented_balanced_1600_all19_normalized_transition\epoch_metadata.csv --output-dir outputs\ds006695_augmented_balanced_1600_all19_normalized_transition_model_compare --n-splits 5 --models random_forest,extra_trees
+python scripts\add_transition_features.py --features-path outputs\ds006695_augmented_balanced_1600_all19_normalized\X_features.npy --labels-path outputs\ds006695_augmented_balanced_1600_all19_normalized\y_labels.npy --metadata-path outputs\ds006695_augmented_balanced_1600_all19_normalized\epoch_metadata.csv --output-dir outputs\ds006695_augmented_balanced_1600_all19_normalized_transition_r2_4_6 --radii 2,4,6
+python scripts\compare_group_models.py --features-path outputs\ds006695_augmented_balanced_1600_all19_normalized_transition_r2_4_6\X_features.npy --labels-path outputs\ds006695_augmented_balanced_1600_all19_normalized_transition_r2_4_6\y_labels.npy --metadata-path outputs\ds006695_augmented_balanced_1600_all19_normalized_transition_r2_4_6\epoch_metadata.csv --output-dir outputs\ds006695_augmented_balanced_1600_all19_normalized_transition_r2_4_6_rf --n-splits 5 --models random_forest
 ```
 
 External GBM models can be compared after installing the optional `gbm` dependencies:
@@ -105,6 +111,19 @@ Random Forest hyperparameters can be tuned with Optuna after installing the opti
 
 ```bash
 python scripts\tune_random_forest_optuna.py --features-path outputs\ds006695_augmented_balanced_1600_all19_normalized_transition\X_features.npy --labels-path outputs\ds006695_augmented_balanced_1600_all19_normalized_transition\y_labels.npy --metadata-path outputs\ds006695_augmented_balanced_1600_all19_normalized_transition\epoch_metadata.csv --output-dir outputs\ds006695_augmented_balanced_1600_all19_normalized_transition_rf_optuna_fast10 --n-splits 5 --n-trials 10 --objective combined --combined-n1-weight 0.35 --search-space fast
+```
+
+Create a final model-selection table from all saved experiment outputs:
+
+```bash
+python scripts\summarize_model_selection.py --outputs-root outputs --output-dir outputs\model_selection_summary
+```
+
+Extract spectrograms and train the first CNN-GRU sequence baseline:
+
+```bash
+python scripts\extract_ds006695_spectrograms.py --bids-root ..\ds006695 --output-dir outputs\ds006695_spectrograms_all19
+python scripts\train_spectrogram_sequence_model.py --spectrograms-path outputs\ds006695_spectrograms_all19\X_spectrograms.npy --labels-path outputs\ds006695_spectrograms_all19\y_labels.npy --metadata-path outputs\ds006695_spectrograms_all19\epoch_metadata.csv --output-dir outputs\ds006695_spectrograms_all19_cnn_gru --n-splits 5 --epochs 8 --batch-size 96 --sequence-radius 2
 ```
 
 2. Train from the extracted `.npy` files:
@@ -144,3 +163,4 @@ Training writes the following files into `outputs/`:
 - For the current `ds003768` workflow, the practical label space is `Wake`, `N1`, `N2`, and `N3`. REM is not present in the source TSV labels.
 - See `docs/current_data_audit.md` for the current data-quality and class-balance findings.
 - See `docs/openneuro_dataset_research.md` for candidate external datasets and integration caveats.
+- See `docs/sota_sleep_staging_research.md` for GitHub/paper research on why stronger sleep-staging results usually require raw or spectrogram sequence models.

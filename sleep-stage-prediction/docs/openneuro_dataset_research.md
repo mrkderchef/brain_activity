@@ -467,6 +467,90 @@ Short 8-trial Optuna run using `balanced_accuracy` as the objective:
 
 Interpretation: Optuna did not beat the current best default Random Forest on balanced 5-class performance (`0.5458`). It did, however, find much better N1-sensitive Random Forest variants. Compared with the current transition-feature RF baseline, N1 F1 improved from `0.2459` to `0.3344` in the balanced/N1 combined setting, and up to `0.3463` in the most N1-sensitive observed trial. This makes tuned RF useful as a secondary sensitivity model, while the untuned transition-feature RF remains the best balanced default.
 
+## Final Model Selection
+
+Added:
+
+- `scripts/summarize_model_selection.py`
+
+The selection script aggregates saved `metrics.json`, `model_comparison_summary.csv`, `n1_focus_summary.csv`, and `optuna_rf_results.json` files into:
+
+- `outputs/model_selection_summary/model_selection_all_results.csv`
+- `outputs/model_selection_summary/model_selection_main_candidates.csv`
+- `outputs/model_selection_summary/model_selection_summary.md`
+
+Main-model selection rule:
+
+1. Use subject-wise balanced accuracy as the primary criterion.
+2. Use macro F1 as the tie-breaker.
+3. Treat N1-threshold and explicitly N1-sensitive variants as sensitivity analyses, not as the main model.
+
+Recommended main model:
+
+| Model | Feature set | Accuracy | Balanced accuracy | Kappa | Macro F1 | N1 recall | N1 F1 |
+|---|---|---:|---:|---:|---:|---:|---:|
+| Random Forest | Transition features | 0.5458 | 0.5458 | 0.4322 | 0.5332 | 0.2038 | 0.2459 |
+
+Nearest competitor:
+
+| Model | Feature set | Accuracy | Balanced accuracy | Kappa | Macro F1 | N1 recall | N1 F1 |
+|---|---|---:|---:|---:|---:|---:|---:|
+| CatBoost | Transition features | 0.5435 | 0.5435 | 0.4294 | 0.5320 | 0.2025 | 0.2430 |
+
+Interpretation: CatBoost is very close, but Random Forest with transition features remains the best main model by the predefined balanced-accuracy criterion. N1-sensitive models remain useful for discussion because they improve N1 detection, but they should not replace the main model unless the thesis objective is explicitly changed from balanced 5-class staging to N1 detection.
+
+### Transition Window Refinement
+
+To improve the selected main model rather than optimizing specifically for N1, several transition-window configurations were tested with the same Random Forest and subject-wise 5-fold validation.
+
+| Transition radii | Window lengths | Features | Accuracy | Balanced accuracy | Kappa | Macro F1 | N1 recall | N1 F1 |
+|---|---|---:|---:|---:|---:|---:|---:|---:|
+| `2,4` | 5 and 9 epochs | 189 | 0.5458 | 0.5458 | 0.4322 | 0.5332 | 0.2038 | 0.2459 |
+| `1,2,4` | 3, 5, and 9 epochs | 273 | 0.5463 | 0.5463 | 0.4328 | 0.5326 | 0.1956 | 0.2391 |
+| `2,4,6` | 5, 9, and 13 epochs | 273 | 0.5465 | 0.5465 | 0.4331 | 0.5344 | 0.2063 | 0.2474 |
+| `4` | 9 epochs | 105 | 0.5424 | 0.5424 | 0.4280 | 0.5302 | 0.1994 | 0.2384 |
+
+The best transition-window configuration is now `radii=2,4,6`.
+
+CatBoost and LightGBM were also checked on this refined feature set:
+
+| Feature set | Model | Accuracy | Balanced accuracy | Kappa | Macro F1 | N1 recall | N1 F1 |
+|---|---|---:|---:|---:|---:|---:|---:|
+| Transition `2,4,6` | CatBoost | 0.5400 | 0.5400 | 0.4250 | 0.5306 | 0.2113 | 0.2454 |
+| Transition `2,4,6` | LightGBM | 0.5213 | 0.5213 | 0.4016 | 0.5187 | 0.2525 | 0.2640 |
+
+Updated recommended main model:
+
+| Model | Feature set | Accuracy | Balanced accuracy | Kappa | Macro F1 | N1 recall | N1 F1 |
+|---|---|---:|---:|---:|---:|---:|---:|
+| Random Forest | Transition features, radii `2,4,6` | 0.5465 | 0.5465 | 0.4331 | 0.5344 | 0.2063 | 0.2474 |
+
+Interpretation: adding a longer 13-epoch transition window gives a small but consistent improvement to the main selection metric. The improvement is modest, but it moves the best overall model in the right direction without changing the objective toward N1-specific detection.
+
+## SOTA Research Follow-Up
+
+See:
+
+- `docs/sota_sleep_staging_research.md`
+
+Summary: GitHub repositories and papers with substantially higher performance generally use raw EEG/EOG/PSG or spectrogram sequence models such as DeepSleepNet, TinySleepNet, AttnSleep, U-Sleep, CNN+BiLSTM, or related architectures. Reported 90% accuracy is usually tied to Sleep-EDF-like datasets, larger source data, multimodal PSG signals, easier tasks/splits, or accuracy rather than macro-F1/balanced accuracy. The current tabular Random Forest pipeline should be treated as a baseline, not the final ceiling.
+
+Next technical direction:
+
+1. Extract raw or log-spectrogram epoch windows from `ds006695`.
+2. Train a small CNN-GRU, CNN-TCN, or AttnSleep-like model with subject-wise folds.
+3. Use Sleep-EDF / `NM000185` for transfer learning if feasible.
+4. Keep the current Random Forest `0.5465` balanced accuracy as the baseline to beat.
+
+Initial implementation result:
+
+| Model | Input | Evaluation | Balanced accuracy | Macro F1 | N1 F1 |
+|---|---|---|---:|---:|---:|
+| Random Forest baseline | transition tabular features | full 5-fold subject-wise CV | 0.5465 | 0.5344 | 0.2474 |
+| CNN-GRU smoke | log-spectrogram sequence windows | first 2/5 subject-wise folds | 0.6314 | 0.6270 | 0.2680 |
+
+The first spectrogram CNN-GRU smoke run beats the tabular Random Forest baseline by a large margin on balanced accuracy. This result should now be expanded to the full 5-fold subject-wise evaluation before being treated as a final model-selection candidate.
+
 ## Sources
 
 - EEGDash `ds003768`: https://eegdash.org/api/dataset/eegdash.dataset.DS003768.html

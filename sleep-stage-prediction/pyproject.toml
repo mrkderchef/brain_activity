@@ -28,6 +28,9 @@ gbm = [
 tuning = [
   "optuna",
 ]
+deep = [
+  "torch",
+]
 
 [tool.setuptools]
 package-dir = {"" = "src"}
