@@ -174,6 +174,42 @@ Quick 3-fold stratified Random Forest smoke test on the balanced 800-per-class s
 
 Important caveat: REM is entirely sourced from `ds006695`, and N3 is mostly sourced from `ds006695`. This balanced subset is useful for building a 5-class classifier, but thesis reporting should include dataset-aware validation to avoid confusing dataset identity with sleep-stage signal.
 
+## Modeling Improvement Pass
+
+Started after the first balanced-pool experiment:
+
+1. Added feature augmentation:
+   - delta/theta ratio
+   - alpha/theta ratio
+   - sigma/delta ratio
+   - beta/alpha ratio
+   - slow/fast ratio
+   - relative band entropy
+2. Added recording/subject-aware robust normalization:
+   - `log1p` transform for absolute mean/std bandpower columns
+   - median/IQR scaling per derived recording/subject group
+3. Added group-aware validation with `StratifiedGroupKFold`.
+
+Results on the 800-per-class mixed pool:
+
+| Feature set / validation | Features | Accuracy | Balanced accuracy | Kappa | Macro F1 |
+|---|---:|---:|---:|---:|---:|
+| Original, random 3-fold CV | 15 | 0.6290 | n/a | 0.5363 | 0.62 |
+| Augmented, random 3-fold CV | 21 | 0.6322 | n/a | 0.5403 | 0.63 |
+| Augmented + normalized, random 3-fold CV | 21 | 0.6593 | n/a | 0.5741 | 0.65 |
+| Augmented + normalized, group 3-fold CV | 21 | 0.3738 | 0.3738 | 0.2172 | 0.29 |
+
+Interpretation: feature augmentation and normalization improve random CV, but group-aware CV stays much lower. This is a useful warning: random splits are still too optimistic when classes are strongly tied to dataset/source.
+
+Results on `ds006695` only, balanced to 400 per class across five subjects:
+
+| Feature set / validation | Features | Accuracy | Balanced accuracy | Kappa | Macro F1 |
+|---|---:|---:|---:|---:|---:|
+| Augmented, subject-wise 5-fold group CV | 21 | 0.4215 | 0.4215 | 0.2769 | 0.40 |
+| Augmented + normalized, subject-wise 5-fold group CV | 21 | 0.4560 | 0.4560 | 0.3200 | 0.43 |
+
+Interpretation: normalization helps under subject-wise validation. The hardest class remains N1, which is expected because N1 is a transitional and often ambiguous sleep stage.
+
 ## Sources
 
 - EEGDash `ds003768`: https://eegdash.org/api/dataset/eegdash.dataset.DS003768.html

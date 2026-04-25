@@ -59,6 +59,15 @@ Combine the current feature set with an external feature set:
 python scripts\combine_feature_sets.py --feature-dir outputs --dataset-id ds003768 --feature-dir outputs\ds006695_features --dataset-id ds006695 --output-dir outputs\combined_ds003768_ds006695
 ```
 
+Add ratio/entropy features, normalize per recording/subject, and train with group-aware validation:
+
+```bash
+python scripts\augment_feature_set.py --features-path outputs\combined_ds003768_ds006695\X_features.npy --labels-path outputs\combined_ds003768_ds006695\y_labels.npy --metadata-path outputs\combined_ds003768_ds006695\epoch_metadata.csv --output-dir outputs\combined_augmented
+python scripts\make_balanced_subset.py --features-path outputs\combined_augmented\X_features.npy --labels-path outputs\combined_augmented\y_labels.npy --metadata-path outputs\combined_augmented\epoch_metadata.csv --output-dir outputs\balanced_800_augmented --target-per-class 800
+python scripts\normalize_feature_set.py --features-path outputs\balanced_800_augmented\X_features.npy --labels-path outputs\balanced_800_augmented\y_labels.npy --metadata-path outputs\balanced_800_augmented\epoch_metadata.csv --output-dir outputs\balanced_800_augmented_normalized
+python scripts\train_group_model.py --features-path outputs\balanced_800_augmented_normalized\X_features.npy --labels-path outputs\balanced_800_augmented_normalized\y_labels.npy --metadata-path outputs\balanced_800_augmented_normalized\epoch_metadata.csv --output-dir outputs\balanced_800_augmented_normalized_group_cv --n-splits 3
+```
+
 2. Train from the extracted `.npy` files:
 
 ```bash
