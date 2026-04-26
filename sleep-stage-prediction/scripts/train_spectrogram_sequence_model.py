@@ -1,4 +1,4 @@
-"""Train a small CNN-GRU sleep-stage model on spectrogram epoch sequences."""
+"""Train small CNN sequence models on spectrogram epoch windows."""
 
 from __future__ import annotations
 
@@ -8,7 +8,6 @@ import os
 import sys
 from pathlib import Path
 
-import joblib
 import numpy as np
 import pandas as pd
 import torch
@@ -59,18 +58,30 @@ def build_sequence_index(metadata: pd.DataFrame, group_ids: pd.Series, radius: i
 
 
 class SpectrogramSequenceDataset(Dataset):
-    def __init__(self, X: np.ndarray, y: np.ndarray, sequence_index: np.ndarray, indices: np.ndarray):
+    def __init__(
+        self,
+        X: np.ndarray,
+        y: np.ndarray,
+        sequence_index: np.ndarray,
+        indices: np.ndarray,
+        mean: np.ndarray | None = None,
+        std: np.ndarray | None = None,
+    ):
         self.X = X
         self.y = y
         self.sequence_index = sequence_index
         self.indices = indices.astype(np.int64)
+        self.mean = mean
+        self.std = std
 
     def __len__(self) -> int:
         return len(self.indices)
 
     def __getitem__(self, item: int):
         row_idx = self.indices[item]
-        seq = self.X[self.sequence_index[row_idx]]
+        seq = np.asarray(self.X[self.sequence_index[row_idx]], dtype=np.float32)
+        if self.mean is not None and self.std is not None:
+            seq = (seq - self.mean) / self.std
         return torch.from_numpy(seq).float(), torch.tensor(int(self.y[row_idx]), dtype=torch.long)
 
 
@@ -108,6 +119,81 @@ class CnnGruSleepNet(nn.Module):
         return self.classifier(center)
 
 
+class CnnTcnSleepNet(nn.Module):
+    def __init__(self, n_channels: int, n_classes: int = 5, hidden_size: int = 64, dropout: float = 0.3):
+        super().__init__()
+        self.encoder = nn.Sequential(
+            nn.Conv2d(n_channels, 16, kernel_size=3, padding=1),
+            nn.BatchNorm2d(16),
+            nn.ReLU(),
+            nn.MaxPool2d(2),
+            nn.Conv2d(16, 32, kernel_size=3, padding=1),
+            nn.BatchNorm2d(32),
+            nn.ReLU(),
+            nn.AdaptiveAvgPool2d((4, 4)),
+            nn.Flatten(),
+            nn.Linear(32 * 4 * 4, hidden_size),
+            nn.ReLU(),
+        )
+        self.temporal = nn.Sequential(
+            nn.Conv1d(hidden_size, hidden_size, kernel_size=3, padding=1),
+            nn.BatchNorm1d(hidden_size),
+            nn.ReLU(),
+            nn.Dropout(dropout),
+            nn.Conv1d(hidden_size, hidden_size, kernel_size=3, padding=1, dilation=2),
+            nn.BatchNorm1d(hidden_size),
+            nn.ReLU(),
+        )
+        self.classifier = nn.Sequential(
+            nn.Dropout(dropout),
+            nn.Linear(hidden_size, n_classes),
+        )
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        batch_size, seq_len, channels, freqs, times = x.shape
+        encoded = self.encoder(x.reshape(batch_size * seq_len, channels, freqs, times))
+        encoded = encoded.reshape(batch_size, seq_len, -1).transpose(1, 2)
+        temporal = self.temporal(encoded).transpose(1, 2)
+        center = temporal[:, seq_len // 2, :]
+        return self.classifier(center)
+
+
+def make_model(args: argparse.Namespace, n_channels: int, n_classes: int) -> nn.Module:
+    if args.model == "cnn_gru":
+        return CnnGruSleepNet(
+            n_channels=n_channels,
+            n_classes=n_classes,
+            hidden_size=args.hidden_size,
+            dropout=args.dropout,
+        )
+    if args.model == "cnn_tcn":
+        return CnnTcnSleepNet(
+            n_channels=n_channels,
+            n_classes=n_classes,
+            hidden_size=args.hidden_size,
+            dropout=args.dropout,
+        )
+    raise ValueError(f"Unknown model: {args.model}")
+
+
+def compute_normalization_stats(X: np.ndarray, train_idx: np.ndarray, mode: str) -> tuple[np.ndarray | None, np.ndarray | None]:
+    if mode == "none":
+        return None, None
+    train_values = np.asarray(X[train_idx], dtype=np.float32)
+    if mode == "global":
+        mean = np.asarray(train_values.mean(), dtype=np.float32)
+        std = np.asarray(train_values.std(), dtype=np.float32)
+    elif mode == "channel":
+        mean = train_values.mean(axis=(0, 2, 3), keepdims=True).astype(np.float32)
+        std = train_values.std(axis=(0, 2, 3), keepdims=True).astype(np.float32)
+        mean = mean.reshape(1, train_values.shape[1], 1, 1)
+        std = std.reshape(1, train_values.shape[1], 1, 1)
+    else:
+        raise ValueError(f"Unknown normalization mode: {mode}")
+    std = np.maximum(std, np.asarray(1e-6, dtype=np.float32))
+    return mean, std
+
+
 def summarize(y_true: np.ndarray, y_pred: np.ndarray, labels: list[int]) -> dict:
     target_names = [SLEEP_STAGE_NAMES.get(label, f"Stage-{label}") for label in labels]
     report = classification_report(
@@ -140,17 +226,13 @@ def train_one_fold(
     args: argparse.Namespace,
     device: torch.device,
 ) -> np.ndarray:
-    train_dataset = SpectrogramSequenceDataset(X, y, sequence_index, train_idx)
-    test_dataset = SpectrogramSequenceDataset(X, y, sequence_index, test_idx)
+    mean, std = compute_normalization_stats(X, train_idx, args.normalization)
+    train_dataset = SpectrogramSequenceDataset(X, y, sequence_index, train_idx, mean=mean, std=std)
+    test_dataset = SpectrogramSequenceDataset(X, y, sequence_index, test_idx, mean=mean, std=std)
     train_loader = DataLoader(train_dataset, batch_size=args.batch_size, shuffle=True)
     test_loader = DataLoader(test_dataset, batch_size=args.batch_size, shuffle=False)
 
-    model = CnnGruSleepNet(
-        n_channels=X.shape[1],
-        n_classes=len(np.unique(y)),
-        hidden_size=args.hidden_size,
-        dropout=args.dropout,
-    ).to(device)
+    model = make_model(args, n_channels=X.shape[1], n_classes=len(np.unique(y))).to(device)
     classes = np.array(sorted(np.unique(y)))
     class_weights = compute_class_weight("balanced", classes=classes, y=y[train_idx])
     criterion = nn.CrossEntropyLoss(weight=torch.tensor(class_weights, dtype=torch.float32, device=device))
@@ -180,7 +262,7 @@ def train_one_fold(
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Train CNN-GRU on spectrogram sequence windows")
+    parser = argparse.ArgumentParser(description="Train CNN sequence models on spectrogram windows")
     parser.add_argument("--spectrograms-path", required=True)
     parser.add_argument("--labels-path", required=True)
     parser.add_argument("--metadata-path", required=True)
@@ -189,6 +271,8 @@ def main() -> None:
     parser.add_argument("--sequence-radius", type=int, default=2)
     parser.add_argument("--n-splits", type=int, default=5)
     parser.add_argument("--max-folds", type=int, default=None)
+    parser.add_argument("--model", choices=["cnn_gru", "cnn_tcn"], default="cnn_gru")
+    parser.add_argument("--normalization", choices=["none", "global", "channel"], default="channel")
     parser.add_argument("--epochs", type=int, default=8)
     parser.add_argument("--batch-size", type=int, default=64)
     parser.add_argument("--hidden-size", type=int, default=64)
@@ -245,7 +329,7 @@ def main() -> None:
     predictions["pred_stage"] = predictions["pred_label"].map(SLEEP_STAGE_NAMES)
     predictions.to_csv(output_dir / "cv_predictions.csv", index=False)
     result = {
-        "model": "cnn_gru_spectrogram",
+        "model": f"{args.model}_spectrogram",
         "cv": "StratifiedGroupKFold",
         "n_splits": int(args.n_splits),
         "max_folds": args.max_folds,
@@ -254,6 +338,7 @@ def main() -> None:
         "spectrogram_shape": list(X.shape[1:]),
         "sequence_radius": int(args.sequence_radius),
         "sequence_length": int(2 * args.sequence_radius + 1),
+        "normalization": args.normalization,
         "epochs": int(args.epochs),
         "batch_size": int(args.batch_size),
         "hidden_size": int(args.hidden_size),

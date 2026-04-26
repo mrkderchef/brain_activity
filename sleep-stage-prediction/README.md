@@ -9,23 +9,23 @@ first spectrogram sequence-model experiment.
 
 ## Current Status
 
-The strongest completed tabular baseline is:
+The strongest completed model is now a CNN-GRU over log-spectrogram sequence
+windows:
 
-| Model | Data | Feature set | Evaluation | Balanced accuracy | Macro F1 | N1 F1 |
-|---|---|---|---|---:|---:|---:|
-| Random Forest | `ds006695`, 19 subjects | transition features, radii `2,4,6` | 5-fold subject-wise CV | `0.5465` | `0.5344` | `0.2474` |
+| Model | Data | Input | Evaluation | Accuracy | Balanced accuracy | Macro F1 | N1 F1 |
+|---|---|---|---|---:|---:|---:|---:|
+| CNN-GRU | `ds006695`, 19 subjects | 9-epoch log-spectrogram sequences, channel-normalized | 5-fold subject-wise CV | `0.6449` | `0.6143` | `0.5963` | `0.2592` |
 
-The most promising in-progress direction is a CNN-GRU over log-spectrogram
-sequence windows:
+The strongest completed tabular baseline remains:
 
-| Model | Input | Current evaluation | Balanced accuracy | Macro F1 | N1 F1 |
-|---|---|---|---:|---:|---:|
-| CNN-GRU | 5-epoch log-spectrogram sequences | first 2 of 5 subject-wise folds | `0.6314` | `0.6270` | `0.2680` |
+| Model | Data | Feature set | Evaluation | Accuracy | Balanced accuracy | Macro F1 | N1 F1 |
+|---|---|---|---|---:|---:|---:|---:|
+| Random Forest | `ds006695`, 19 subjects | transition features, radii `2,4,6` | 5-fold subject-wise CV | `0.5465` | `0.5465` | `0.5344` | `0.2474` |
 
-The CNN-GRU result is intentionally treated as a running/intermediate result
-until all five folds are complete. It already suggests that rawer temporal-
-spectral inputs are a better next step than squeezing more out of hand-crafted
-band-power tables.
+Decision: the CNN-GRU is now the best overall model by subject-wise balanced
+accuracy. The Random Forest is still useful as a classical, interpretable
+baseline, but the project should now treat spectrogram sequence modeling as the
+main performance path.
 
 ## Why The Project Changed Direction
 
@@ -178,24 +178,51 @@ Decision: use Random Forest + transition `2,4,6` as the completed tabular
 baseline, because it wins the predefined main criterion: subject-wise balanced
 accuracy.
 
-### Spectrogram sequence models look like the next ceiling
+### Spectrogram sequence models broke through the tabular ceiling
 
 The literature and GitHub survey pointed in the same direction: stronger
 sleep-staging systems usually use raw EEG/EOG/PSG or spectrogram sequences,
 not only per-epoch band-power summary features.
 
-The first CNN-GRU smoke run on `ds006695` spectrogram sequences evaluated two
-of five subject-wise folds so far:
+The first full CNN-GRU run on `ds006695` spectrogram sequences used 5-epoch
+windows and completed all five subject-wise folds:
 
 | Metric | Value |
 |---|---:|
-| Accuracy | `0.6747` |
-| Balanced accuracy | `0.6314` |
-| Macro F1 | `0.6270` |
-| N1 F1 | `0.2680` |
+| Accuracy | `0.6432` |
+| Balanced accuracy | `0.6079` |
+| Macro F1 | `0.5964` |
+| Cohen's kappa | `0.5318` |
+| N1 recall | `0.3306` |
+| N1 F1 | `0.2716` |
 
-Decision: keep the tabular Random Forest as the baseline to beat, but continue
-the full 5-fold CNN-GRU evaluation before making it the selected model.
+Fold-level results:
+
+| Fold | Accuracy | Balanced accuracy | Macro F1 | N1 F1 |
+|---:|---:|---:|---:|---:|
+| 1 | `0.6402` | `0.6300` | `0.6136` | `0.3114` |
+| 2 | `0.7088` | `0.6208` | `0.6269` | `0.1677` |
+| 3 | `0.5935` | `0.5632` | `0.5242` | `0.1072` |
+| 4 | `0.6161` | `0.5783` | `0.5619` | `0.2578` |
+| 5 | `0.6479` | `0.6279` | `0.6114` | `0.3616` |
+
+Decision: the spectrogram model is clearly better than the tabular RF baseline
+on overall metrics. Fold 3 and the N1 variance show that it is not solved yet,
+but this is the first modeling direction that moves the project meaningfully
+above the mid-50s balanced-accuracy ceiling.
+
+The next improvement pass added fold-wise channel normalization and expanded the
+sequence context to 9 epochs (`sequence_radius=4`):
+
+| Model | Context | Normalization | Accuracy | Balanced accuracy | Macro F1 | N1 F1 |
+|---|---|---|---:|---:|---:|---:|
+| CNN-GRU | 5 epochs | none | `0.6432` | `0.6079` | `0.5964` | `0.2716` |
+| CNN-GRU | 9 epochs | channel-wise from training fold | `0.6449` | `0.6143` | `0.5963` | `0.2592` |
+| CNN-TCN smoke, first 2 folds | 9 epochs | channel-wise from training fold | `0.6240` | `0.5310` | `0.5451` | `0.2511` |
+
+Decision: the normalized 9-epoch CNN-GRU is the new best main model by balanced
+accuracy. The TCN variant was worse in the 2-fold smoke test and is not the next
+candidate unless redesigned.
 
 ## Project Layout
 
@@ -327,11 +354,12 @@ Main output:
 ```bash
 python scripts\extract_ds006695_spectrograms.py --bids-root ..\ds006695 --output-dir outputs\ds006695_spectrograms_all19
 
-python scripts\train_spectrogram_sequence_model.py --spectrograms-path outputs\ds006695_spectrograms_all19\X_spectrograms.npy --labels-path outputs\ds006695_spectrograms_all19\y_labels.npy --metadata-path outputs\ds006695_spectrograms_all19\epoch_metadata.csv --output-dir outputs\ds006695_spectrograms_all19_cnn_gru --n-splits 5 --epochs 8 --batch-size 96 --sequence-radius 2
+python scripts\train_spectrogram_sequence_model.py --spectrograms-path outputs\ds006695_spectrograms_all19\X_spectrograms.npy --labels-path outputs\ds006695_spectrograms_all19\y_labels.npy --metadata-path outputs\ds006695_spectrograms_all19\epoch_metadata.csv --output-dir outputs\ds006695_spectrograms_all19_cnn_gru_norm_r4_e8_full5 --n-splits 5 --epochs 8 --batch-size 96 --sequence-radius 4 --model cnn_gru --normalization channel
 ```
 
-The current smoke run used 5-epoch sequences (`sequence_radius=2`) and has
-completed two subject-wise folds in `outputs\ds006695_spectrograms_all19_cnn_gru_smoke`.
+The current best full run uses 9-epoch sequences (`sequence_radius=4`) with
+channel-wise train-fold normalization and writes results to
+`outputs\ds006695_spectrograms_all19_cnn_gru_norm_r4_e8_full5`.
 
 ## Output Conventions
 
@@ -357,8 +385,11 @@ Generated outputs usually include:
 - Transition-aware tabular features are the best completed classical baseline.
 - N1 remains the hardest class; threshold tuning can improve recall but changes
   the objective.
-- Spectrogram sequence modeling is the most promising next direction and is
-  already outperforming the tabular baseline in the current partial run.
+- Spectrogram sequence modeling is now the best completed direction and
+  outperforms the tabular baseline by roughly `+0.0678` balanced accuracy.
+- The next likely gains should come from longer training, larger context
+  windows, CNN-TCN/attention variants, and transfer learning from Sleep-EDF,
+  not from more Random Forest tuning.
 
 ## Further Notes
 

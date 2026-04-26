@@ -24,6 +24,8 @@ def infer_feature_set(path: Path) -> str:
     text = path.as_posix().lower()
     if "transition" in text:
         return "transition"
+    if "spectrogram" in text:
+        return "spectrogram_sequence"
     if "seq1" in text or "sequence" in text:
         return "sequence_context"
     if "normalized" in text:
@@ -36,6 +38,7 @@ def infer_feature_set(path: Path) -> str:
 def add_row(rows: list[dict], row: dict) -> None:
     for column in METRIC_COLUMNS:
         row.setdefault(column, None)
+    row.setdefault("is_complete_cv", True)
     rows.append(row)
 
 
@@ -49,9 +52,10 @@ def read_model_comparison(path: Path, outputs_root: Path, rows: list[dict]) -> N
                 "experiment": path.parent.name,
                 "feature_set": infer_feature_set(path),
                 "model": record["model"],
-                "selection_role": "candidate",
-                "is_thresholded": False,
-                **{column: record.get(column) for column in METRIC_COLUMNS},
+            "selection_role": "candidate",
+            "is_thresholded": False,
+            "is_complete_cv": True,
+            **{column: record.get(column) for column in METRIC_COLUMNS},
             },
         )
 
@@ -61,21 +65,24 @@ def read_group_metrics(path: Path, outputs_root: Path, rows: list[dict]) -> None
         metrics = json.load(handle)
     if metrics.get("cv") != "StratifiedGroupKFold":
         return
-    report = metrics.get("classification_report", {})
+    summary = metrics.get("summary", metrics)
+    report = summary.get("classification_report", {})
     n1 = report.get("N1", {})
     macro = report.get("macro avg", {})
+    model_name = metrics.get("model", "random_forest")
     add_row(
         rows,
         {
             "source_file": str(path.relative_to(outputs_root.parent)),
             "experiment": path.parent.name,
             "feature_set": infer_feature_set(path),
-            "model": "random_forest",
+            "model": model_name,
             "selection_role": "candidate",
             "is_thresholded": False,
-            "accuracy": metrics.get("accuracy"),
-            "balanced_accuracy": metrics.get("balanced_accuracy"),
-            "cohen_kappa": metrics.get("cohen_kappa"),
+            "is_complete_cv": metrics.get("max_folds") is None,
+            "accuracy": summary.get("accuracy"),
+            "balanced_accuracy": summary.get("balanced_accuracy"),
+            "cohen_kappa": summary.get("cohen_kappa"),
             "macro_f1": macro.get("f1-score"),
             "n1_precision": n1.get("precision"),
             "n1_recall": n1.get("recall"),
@@ -97,6 +104,7 @@ def read_optuna_results(path: Path, outputs_root: Path, rows: list[dict]) -> Non
             "model": f"random_forest_optuna_{result.get('objective', 'unknown')}",
             "selection_role": "sensitivity" if result.get("objective") != "balanced_accuracy" else "candidate",
             "is_thresholded": False,
+            "is_complete_cv": True,
             **{column: summary.get(column) for column in METRIC_COLUMNS},
         },
     )
@@ -117,6 +125,7 @@ def read_n1_focus(path: Path, outputs_root: Path, rows: list[dict]) -> None:
                 "model": model,
                 "selection_role": "sensitivity",
                 "is_thresholded": bool(is_thresholded),
+                "is_complete_cv": True,
                 "n1_weight": record.get("n1_weight"),
                 "n1_threshold": threshold,
                 **{column: record.get(column) for column in METRIC_COLUMNS},
@@ -128,6 +137,7 @@ def write_markdown(summary: pd.DataFrame, output_path: Path) -> None:
     primary = summary[
         (summary["selection_role"] == "candidate")
         & (~summary["is_thresholded"])
+        & (summary["is_complete_cv"])
         & summary["balanced_accuracy"].notna()
     ].sort_values(["balanced_accuracy", "macro_f1"], ascending=False)
 
@@ -250,6 +260,7 @@ def main() -> None:
     main_candidates = summary[
         (summary["selection_role"] == "candidate")
         & (~summary["is_thresholded"])
+        & (summary["is_complete_cv"])
         & summary["balanced_accuracy"].notna()
     ].sort_values(["balanced_accuracy", "macro_f1"], ascending=False)
     main_candidates.to_csv(output_dir / "model_selection_main_candidates.csv", index=False)

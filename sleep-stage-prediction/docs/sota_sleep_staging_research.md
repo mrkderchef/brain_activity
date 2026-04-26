@@ -182,16 +182,18 @@ Implemented first pass:
 |---|---|---|---:|---:|---:|
 | Random Forest baseline | transition tabular features | full 5-fold subject-wise CV | 0.5465 | 0.5344 | 0.2474 |
 | CNN-GRU smoke | log-spectrogram sequence windows | first 2/5 subject-wise folds | 0.6314 | 0.6270 | 0.2680 |
+| CNN-GRU full | 5-epoch log-spectrogram sequences | full 5-fold subject-wise CV | 0.6079 | 0.5964 | 0.2716 |
+| CNN-GRU full improved | 9-epoch log-spectrogram sequences, channel-normalized | full 5-fold subject-wise CV | 0.6143 | 0.5963 | 0.2592 |
 
-Interpretation: the spectrogram sequence approach immediately beats the tabular Random Forest baseline on the evaluated folds, even with a small CPU-trained model. This strongly supports moving the project toward raw/spectrogram deep learning. The result is not yet the final headline number because only 2 of 5 folds were run, but it is the first clear evidence that the RF ceiling was mostly a feature/model limitation.
+Interpretation: the spectrogram sequence approach beats the tabular Random Forest baseline on the full subject-wise evaluation. Increasing context from 5 to 9 epochs and adding train-fold channel normalization improved balanced accuracy from `0.6079` to `0.6143`, although N1 F1 decreased slightly. This strongly supports moving the project toward raw/spectrogram deep learning. The RF ceiling was mostly a feature/model limitation.
 
 Next implementation steps:
 
-1. Run the CNN-GRU on all 5 folds.
-2. Increase training from 5 to 8-12 epochs if validation remains stable.
-3. Try sequence radius `4` for 9-epoch context.
-4. Add checkpointing and per-fold saved models.
-5. Consider a CNN-TCN variant if CPU training remains manageable.
+1. Add checkpointing and per-fold saved models.
+2. Try better regularization/early stopping, because fold 3 remains weak.
+3. Try class-balanced sampling or focal loss for N1.
+4. Try a redesigned attention/TCN variant; the first simple CNN-TCN smoke test was worse than CNN-GRU.
+5. Use Sleep-EDF / `NM000185` for pretraining once the supervised spectrogram pipeline is stable.
 
 ## Sources
 

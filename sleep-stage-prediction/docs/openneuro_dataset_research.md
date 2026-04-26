@@ -548,8 +548,10 @@ Initial implementation result:
 |---|---|---|---:|---:|---:|
 | Random Forest baseline | transition tabular features | full 5-fold subject-wise CV | 0.5465 | 0.5344 | 0.2474 |
 | CNN-GRU smoke | log-spectrogram sequence windows | first 2/5 subject-wise folds | 0.6314 | 0.6270 | 0.2680 |
+| CNN-GRU full | 5-epoch log-spectrogram sequences | full 5-fold subject-wise CV | 0.6079 | 0.5964 | 0.2716 |
+| CNN-GRU full improved | 9-epoch log-spectrogram sequences, channel-normalized | full 5-fold subject-wise CV | 0.6143 | 0.5963 | 0.2592 |
 
-The first spectrogram CNN-GRU smoke run beats the tabular Random Forest baseline by a large margin on balanced accuracy. This result should now be expanded to the full 5-fold subject-wise evaluation before being treated as a final model-selection candidate.
+The spectrogram CNN-GRU beats the tabular Random Forest baseline by a large margin on full subject-wise balanced accuracy. Increasing the sequence context to 9 epochs and adding channel-wise train-fold normalization gives the best completed main-model result so far: balanced accuracy `0.6143`.
 
 ## Sources
 
