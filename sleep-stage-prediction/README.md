@@ -354,12 +354,32 @@ Main output:
 ```bash
 python scripts\extract_ds006695_spectrograms.py --bids-root ..\ds006695 --output-dir outputs\ds006695_spectrograms_all19
 
-python scripts\train_spectrogram_sequence_model.py --spectrograms-path outputs\ds006695_spectrograms_all19\X_spectrograms.npy --labels-path outputs\ds006695_spectrograms_all19\y_labels.npy --metadata-path outputs\ds006695_spectrograms_all19\epoch_metadata.csv --output-dir outputs\ds006695_spectrograms_all19_cnn_gru_norm_r4_e8_full5 --n-splits 5 --epochs 8 --batch-size 96 --sequence-radius 4 --model cnn_gru --normalization channel
+python scripts\train_spectrogram_sequence_model.py --spectrograms-path outputs\ds006695_spectrograms_all19\X_spectrograms.npy --labels-path outputs\ds006695_spectrograms_all19\y_labels.npy --metadata-path outputs\ds006695_spectrograms_all19\epoch_metadata.csv --output-dir outputs\ds006695_spectrograms_all19_cnn_gru_norm_r4_e20_full5 --n-splits 5 --epochs 20 --batch-size 96 --sequence-radius 4 --model cnn_gru --normalization channel --early-stopping-patience 5
 ```
 
 The current best full run uses 9-epoch sequences (`sequence_radius=4`) with
 channel-wise train-fold normalization and writes results to
 `outputs\ds006695_spectrograms_all19_cnn_gru_norm_r4_e8_full5`.
+
+The spectrogram training script now uses an inner group-aware validation split
+inside each outer subject-wise fold. It saves the best checkpoint per fold under
+`checkpoints\`, writes epoch-level training curves to `training_history.json`,
+and includes class probabilities, prediction confidence, prediction entropy,
+and fold IDs in `cv_predictions.csv`.
+
+### Analyze CV predictions by subject
+
+```bash
+python scripts\analyze_cv_predictions.py --predictions-path outputs\ds006695_spectrograms_all19_cnn_gru_norm_r4_e20_full5\cv_predictions.csv --output-dir outputs\ds006695_spectrograms_all19_cnn_gru_norm_r4_e20_full5_analysis
+```
+
+Main outputs:
+
+- `prediction_analysis.md`
+- `subject_metrics.csv`
+- `fold_metrics_from_predictions.csv`
+- `confusion_summary.csv`
+- `confidence_summary.csv`
 
 ## Output Conventions
 

@@ -17,8 +17,9 @@ from sklearn.metrics import (
     classification_report,
     cohen_kappa_score,
     confusion_matrix,
+    log_loss,
 )
-from sklearn.model_selection import StratifiedGroupKFold
+from sklearn.model_selection import StratifiedGroupKFold, train_test_split
 from sklearn.utils.class_weight import compute_class_weight
 from torch import nn
 from torch.utils.data import DataLoader, Dataset
@@ -158,6 +159,23 @@ class CnnTcnSleepNet(nn.Module):
         return self.classifier(center)
 
 
+class FocalLoss(nn.Module):
+    def __init__(self, weight: torch.Tensor | None = None, gamma: float = 2.0):
+        super().__init__()
+        self.weight = weight
+        self.gamma = gamma
+
+    def forward(self, logits: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
+        ce_loss = nn.functional.cross_entropy(
+            logits,
+            target,
+            weight=self.weight,
+            reduction="none",
+        )
+        pt = torch.exp(-ce_loss)
+        return ((1.0 - pt) ** self.gamma * ce_loss).mean()
+
+
 def make_model(args: argparse.Namespace, n_channels: int, n_classes: int) -> nn.Module:
     if args.model == "cnn_gru":
         return CnnGruSleepNet(
@@ -209,9 +227,9 @@ def summarize(y_true: np.ndarray, y_pred: np.ndarray, labels: list[int]) -> dict
         "balanced_accuracy": float(balanced_accuracy_score(y_true, y_pred)),
         "cohen_kappa": float(cohen_kappa_score(y_true, y_pred)),
         "macro_f1": float(report["macro avg"]["f1-score"]),
-        "n1_precision": float(report["N1"]["precision"]),
-        "n1_recall": float(report["N1"]["recall"]),
-        "n1_f1": float(report["N1"]["f1-score"]),
+        "n1_precision": float(report.get("N1", {}).get("precision", np.nan)),
+        "n1_recall": float(report.get("N1", {}).get("recall", np.nan)),
+        "n1_f1": float(report.get("N1", {}).get("f1-score", np.nan)),
         "classification_report": report,
         "confusion_matrix": confusion_matrix(y_true, y_pred, labels=labels).tolist(),
     }
@@ -223,20 +241,51 @@ def train_one_fold(
     sequence_index: np.ndarray,
     train_idx: np.ndarray,
     test_idx: np.ndarray,
+    group_ids: np.ndarray,
+    fold_idx: int,
     args: argparse.Namespace,
     device: torch.device,
-) -> np.ndarray:
-    mean, std = compute_normalization_stats(X, train_idx, args.normalization)
-    train_dataset = SpectrogramSequenceDataset(X, y, sequence_index, train_idx, mean=mean, std=std)
+) -> tuple[np.ndarray, np.ndarray, dict]:
+    fit_idx, val_idx = split_train_validation(y, train_idx, group_ids, args)
+    mean, std = compute_normalization_stats(X, fit_idx, args.normalization)
+    train_dataset = SpectrogramSequenceDataset(X, y, sequence_index, fit_idx, mean=mean, std=std)
+    val_dataset = SpectrogramSequenceDataset(X, y, sequence_index, val_idx, mean=mean, std=std)
     test_dataset = SpectrogramSequenceDataset(X, y, sequence_index, test_idx, mean=mean, std=std)
     train_loader = DataLoader(train_dataset, batch_size=args.batch_size, shuffle=True)
+    val_loader = DataLoader(val_dataset, batch_size=args.batch_size, shuffle=False)
     test_loader = DataLoader(test_dataset, batch_size=args.batch_size, shuffle=False)
 
     model = make_model(args, n_channels=X.shape[1], n_classes=len(np.unique(y))).to(device)
     classes = np.array(sorted(np.unique(y)))
-    class_weights = compute_class_weight("balanced", classes=classes, y=y[train_idx])
-    criterion = nn.CrossEntropyLoss(weight=torch.tensor(class_weights, dtype=torch.float32, device=device))
+    class_weights = np.ones(len(classes), dtype=np.float32)
+    present_classes = np.array(sorted(np.unique(y[fit_idx])))
+    present_weights = compute_class_weight("balanced", classes=present_classes, y=y[fit_idx])
+    for class_label, weight in zip(present_classes, present_weights):
+        class_pos = int(np.where(classes == class_label)[0][0])
+        class_weights[class_pos] = float(weight)
+    n1_positions = np.where(classes == 1)[0]
+    if len(n1_positions) == 1:
+        class_weights[int(n1_positions[0])] *= args.n1_weight_multiplier
+    class_weight_tensor = torch.tensor(class_weights, dtype=torch.float32, device=device)
+    if args.loss == "cross_entropy":
+        criterion = nn.CrossEntropyLoss(weight=class_weight_tensor)
+    elif args.loss == "focal":
+        criterion = FocalLoss(weight=class_weight_tensor, gamma=args.focal_gamma)
+    else:
+        raise ValueError(f"Unknown loss: {args.loss}")
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.learning_rate, weight_decay=args.weight_decay)
+    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+        optimizer,
+        mode="max",
+        factor=args.lr_plateau_factor,
+        patience=args.lr_plateau_patience,
+    )
+
+    best_score = -np.inf
+    best_epoch = 0
+    best_state = None
+    epochs_without_improvement = 0
+    history = []
 
     for epoch in range(args.epochs):
         model.train()
@@ -250,15 +299,116 @@ def train_one_fold(
             loss.backward()
             optimizer.step()
             total_loss += float(loss.item()) * len(yb)
-        print(f"    epoch {epoch + 1}/{args.epochs} loss={total_loss / len(train_dataset):.4f}", flush=True)
+        train_loss = total_loss / len(train_dataset)
+        val_pred, val_prob = predict_loader(model, val_loader, device)
+        val_summary = summarize(y[val_idx], val_pred, classes.tolist())
+        if len(classes) > 1:
+            val_loss = float(log_loss(y[val_idx], val_prob, labels=classes.tolist()))
+        else:
+            val_loss = float("nan")
+        val_score = val_summary["balanced_accuracy"]
+        scheduler.step(val_score)
+        history.append(
+            {
+                "epoch": int(epoch + 1),
+                "train_loss": float(train_loss),
+                "val_loss": val_loss,
+                "val_balanced_accuracy": float(val_score),
+                "val_macro_f1": float(val_summary["macro_f1"]),
+                "val_n1_f1": float(val_summary["n1_f1"]),
+            }
+        )
+        print(
+            f"    epoch {epoch + 1}/{args.epochs} "
+            f"loss={train_loss:.4f} val_bal_acc={val_score:.4f} "
+            f"val_macro_f1={val_summary['macro_f1']:.4f}",
+            flush=True,
+        )
+        if val_score > best_score + args.early_stopping_min_delta:
+            best_score = val_score
+            best_epoch = epoch + 1
+            best_state = {
+                "model_state_dict": {key: value.detach().cpu().clone() for key, value in model.state_dict().items()},
+                "mean": mean,
+                "std": std,
+                "classes": classes,
+                "args": vars(args),
+                "fold": int(fold_idx),
+                "best_epoch": int(best_epoch),
+                "best_val_balanced_accuracy": float(best_score),
+            }
+            epochs_without_improvement = 0
+        else:
+            epochs_without_improvement += 1
+            if args.early_stopping_patience > 0 and epochs_without_improvement >= args.early_stopping_patience:
+                print(f"    early stopping at epoch {epoch + 1}; best epoch={best_epoch}", flush=True)
+                break
+
+    if best_state is not None:
+        model.load_state_dict(best_state["model_state_dict"])
+        checkpoint_dir = Path(args.output_dir) / "checkpoints"
+        checkpoint_dir.mkdir(parents=True, exist_ok=True)
+        checkpoint_path = checkpoint_dir / f"fold_{fold_idx:02d}_best.pt"
+        torch.save(best_state, checkpoint_path)
+    else:
+        checkpoint_path = None
 
     model.eval()
+    predictions, probabilities = predict_loader(model, test_loader, device)
+    training_info = {
+        "fold": int(fold_idx),
+        "fit_rows": int(len(fit_idx)),
+        "validation_rows": int(len(val_idx)),
+        "test_rows": int(len(test_idx)),
+        "best_epoch": int(best_epoch),
+        "best_val_balanced_accuracy": float(best_score),
+        "checkpoint_path": str(checkpoint_path) if checkpoint_path is not None else None,
+        "history": history,
+    }
+    return predictions, probabilities, training_info
+
+
+def split_train_validation(
+    y: np.ndarray,
+    train_idx: np.ndarray,
+    group_ids: np.ndarray,
+    args: argparse.Namespace,
+) -> tuple[np.ndarray, np.ndarray]:
+    train_groups = group_ids[train_idx]
+    unique_groups = np.unique(train_groups)
+    if len(unique_groups) < 2:
+        stratify = y[train_idx]
+        _, counts = np.unique(stratify, return_counts=True)
+        if np.any(counts < 2):
+            stratify = None
+        fit_local, val_local = train_test_split(
+            np.arange(len(train_idx)),
+            test_size=args.validation_fraction,
+            random_state=args.seed,
+            stratify=stratify,
+        )
+    else:
+        n_splits = min(args.inner_val_splits, len(unique_groups))
+        splitter = StratifiedGroupKFold(n_splits=n_splits, shuffle=True, random_state=args.seed)
+        fit_local, val_local = next(splitter.split(np.zeros(len(train_idx)), y[train_idx], groups=train_groups))
+    return train_idx[fit_local], train_idx[val_local]
+
+
+def predict_loader(
+    model: nn.Module,
+    loader: DataLoader,
+    device: torch.device,
+) -> tuple[np.ndarray, np.ndarray]:
     predictions = []
+    probabilities = []
+    model.eval()
     with torch.no_grad():
-        for xb, _ in test_loader:
+        for xb, _ in loader:
             logits = model(xb.to(device))
-            predictions.append(torch.argmax(logits, dim=1).cpu().numpy())
-    return np.concatenate(predictions)
+            prob = torch.softmax(logits, dim=1)
+            probabilities.append(prob.cpu().numpy())
+            predictions.append(torch.argmax(prob, dim=1).cpu().numpy())
+    return np.concatenate(predictions), np.concatenate(probabilities)
 
 
 def main() -> None:
@@ -279,6 +429,15 @@ def main() -> None:
     parser.add_argument("--dropout", type=float, default=0.3)
     parser.add_argument("--learning-rate", type=float, default=1e-3)
     parser.add_argument("--weight-decay", type=float, default=1e-4)
+    parser.add_argument("--loss", choices=["cross_entropy", "focal"], default="cross_entropy")
+    parser.add_argument("--focal-gamma", type=float, default=2.0)
+    parser.add_argument("--n1-weight-multiplier", type=float, default=1.0)
+    parser.add_argument("--inner-val-splits", type=int, default=5)
+    parser.add_argument("--validation-fraction", type=float, default=0.2)
+    parser.add_argument("--early-stopping-patience", type=int, default=5)
+    parser.add_argument("--early-stopping-min-delta", type=float, default=1e-4)
+    parser.add_argument("--lr-plateau-patience", type=int, default=2)
+    parser.add_argument("--lr-plateau-factor", type=float, default=0.5)
     parser.add_argument("--seed", type=int, default=42)
     args = parser.parse_args()
 
@@ -300,17 +459,33 @@ def main() -> None:
 
     cv = StratifiedGroupKFold(n_splits=args.n_splits, shuffle=True, random_state=args.seed)
     y_pred = np.full_like(y, fill_value=-1)
+    y_prob = np.full((len(y), len(labels)), fill_value=np.nan, dtype=np.float32)
+    fold_assignments = np.full(len(y), fill_value=-1, dtype=np.int64)
     fold_rows = []
+    training_history = []
     for fold_idx, (train_idx, test_idx) in enumerate(cv.split(np.zeros(len(y)), y, groups=groups), start=1):
         if args.max_folds is not None and fold_idx > args.max_folds:
             break
         print(f"Fold {fold_idx}: train={len(train_idx)} test={len(test_idx)}")
-        fold_pred = train_one_fold(X, y, sequence_index, train_idx, test_idx, args, device)
+        fold_pred, fold_prob, fold_info = train_one_fold(
+            X,
+            y,
+            sequence_index,
+            train_idx,
+            test_idx,
+            groups,
+            fold_idx,
+            args,
+            device,
+        )
         y_pred[test_idx] = fold_pred
+        y_prob[test_idx] = fold_prob
+        fold_assignments[test_idx] = fold_idx
+        training_history.append(fold_info)
         fold_summary = summarize(y[test_idx], fold_pred, labels)
         fold_rows.append({"fold": fold_idx, **{k: fold_summary[k] for k in [
             "accuracy", "balanced_accuracy", "cohen_kappa", "macro_f1", "n1_f1"
-        ]}})
+        ]}, "best_epoch": fold_info["best_epoch"], "best_val_balanced_accuracy": fold_info["best_val_balanced_accuracy"]})
         print(
             f"  fold {fold_idx}: balanced_accuracy={fold_summary['balanced_accuracy']:.4f} "
             f"macro_f1={fold_summary['macro_f1']:.4f}",
@@ -322,11 +497,20 @@ def main() -> None:
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     pd.DataFrame(fold_rows).to_csv(output_dir / "fold_metrics.csv", index=False)
+    with open(output_dir / "training_history.json", "w", encoding="utf-8") as handle:
+        json.dump(training_history, handle, indent=2)
     predictions = metadata.loc[evaluated].copy()
+    predictions["fold"] = fold_assignments[evaluated]
     predictions["true_label"] = y[evaluated]
     predictions["pred_label"] = y_pred[evaluated]
     predictions["true_stage"] = predictions["true_label"].map(SLEEP_STAGE_NAMES)
     predictions["pred_stage"] = predictions["pred_label"].map(SLEEP_STAGE_NAMES)
+    for class_idx, label in enumerate(labels):
+        stage_name = SLEEP_STAGE_NAMES.get(label, f"Stage-{label}")
+        predictions[f"prob_{stage_name}"] = y_prob[evaluated, class_idx]
+    predictions["prediction_confidence"] = np.nanmax(y_prob[evaluated], axis=1)
+    safe_prob = np.clip(y_prob[evaluated], 1e-8, 1.0)
+    predictions["prediction_entropy"] = -np.sum(safe_prob * np.log(safe_prob), axis=1)
     predictions.to_csv(output_dir / "cv_predictions.csv", index=False)
     result = {
         "model": f"{args.model}_spectrogram",
@@ -345,6 +529,12 @@ def main() -> None:
         "dropout": float(args.dropout),
         "learning_rate": float(args.learning_rate),
         "weight_decay": float(args.weight_decay),
+        "loss": args.loss,
+        "focal_gamma": float(args.focal_gamma),
+        "n1_weight_multiplier": float(args.n1_weight_multiplier),
+        "inner_val_splits": int(args.inner_val_splits),
+        "early_stopping_patience": int(args.early_stopping_patience),
+        "early_stopping_min_delta": float(args.early_stopping_min_delta),
         "summary": summary,
     }
     with open(output_dir / "metrics.json", "w", encoding="utf-8") as handle:
