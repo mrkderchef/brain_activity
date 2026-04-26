@@ -22,7 +22,7 @@ from sklearn.metrics import (
 from sklearn.model_selection import StratifiedGroupKFold, train_test_split
 from sklearn.utils.class_weight import compute_class_weight
 from torch import nn
-from torch.utils.data import DataLoader, Dataset
+from torch.utils.data import DataLoader, Dataset, WeightedRandomSampler
 
 PROJECT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SRC_DIR = os.path.join(PROJECT_DIR, "src")
@@ -65,15 +65,31 @@ class SpectrogramSequenceDataset(Dataset):
         y: np.ndarray,
         sequence_index: np.ndarray,
         indices: np.ndarray,
-        mean: np.ndarray | None = None,
-        std: np.ndarray | None = None,
+        group_ids: np.ndarray,
+        normalization_stats: dict | None = None,
+        clip_value: float | None = None,
+        augment: bool = False,
+        time_mask_prob: float = 0.0,
+        max_time_mask_fraction: float = 0.1,
+        freq_mask_prob: float = 0.0,
+        max_freq_mask_fraction: float = 0.1,
+        channel_mask_prob: float = 0.0,
+        noise_std: float = 0.0,
     ):
         self.X = X
         self.y = y
         self.sequence_index = sequence_index
         self.indices = indices.astype(np.int64)
-        self.mean = mean
-        self.std = std
+        self.group_ids = group_ids
+        self.normalization_stats = normalization_stats
+        self.clip_value = clip_value
+        self.augment = augment
+        self.time_mask_prob = time_mask_prob
+        self.max_time_mask_fraction = max_time_mask_fraction
+        self.freq_mask_prob = freq_mask_prob
+        self.max_freq_mask_fraction = max_freq_mask_fraction
+        self.channel_mask_prob = channel_mask_prob
+        self.noise_std = noise_std
 
     def __len__(self) -> int:
         return len(self.indices)
@@ -81,9 +97,45 @@ class SpectrogramSequenceDataset(Dataset):
     def __getitem__(self, item: int):
         row_idx = self.indices[item]
         seq = np.asarray(self.X[self.sequence_index[row_idx]], dtype=np.float32)
-        if self.mean is not None and self.std is not None:
-            seq = (seq - self.mean) / self.std
+        seq = self.normalize(seq, row_idx)
+        if self.augment:
+            seq = self.apply_augmentation(seq)
         return torch.from_numpy(seq).float(), torch.tensor(int(self.y[row_idx]), dtype=torch.long)
+
+    def normalize(self, seq: np.ndarray, row_idx: int) -> np.ndarray:
+        if self.normalization_stats is None:
+            return seq
+        if self.normalization_stats["mode"] == "recording_robust":
+            group_key = str(self.group_ids[row_idx])
+            stats = self.normalization_stats["group_stats"].get(group_key, self.normalization_stats["fallback"])
+            center = stats["center"]
+            scale = stats["scale"]
+        else:
+            center = self.normalization_stats["center"]
+            scale = self.normalization_stats["scale"]
+        seq = (seq - center) / scale
+        if self.clip_value is not None and self.clip_value > 0:
+            seq = np.clip(seq, -self.clip_value, self.clip_value)
+        return seq.astype(np.float32, copy=False)
+
+    def apply_augmentation(self, seq: np.ndarray) -> np.ndarray:
+        seq = seq.copy()
+        if self.time_mask_prob > 0 and np.random.random() < self.time_mask_prob:
+            max_width = max(1, int(seq.shape[-1] * self.max_time_mask_fraction))
+            width = np.random.randint(1, max_width + 1)
+            start = np.random.randint(0, max(1, seq.shape[-1] - width + 1))
+            seq[..., start : start + width] = 0.0
+        if self.freq_mask_prob > 0 and np.random.random() < self.freq_mask_prob:
+            max_width = max(1, int(seq.shape[-2] * self.max_freq_mask_fraction))
+            width = np.random.randint(1, max_width + 1)
+            start = np.random.randint(0, max(1, seq.shape[-2] - width + 1))
+            seq[..., start : start + width, :] = 0.0
+        if self.channel_mask_prob > 0 and np.random.random() < self.channel_mask_prob:
+            channel = np.random.randint(0, seq.shape[1])
+            seq[:, channel, :, :] = 0.0
+        if self.noise_std > 0:
+            seq += np.random.normal(0.0, self.noise_std, size=seq.shape).astype(np.float32)
+        return seq
 
 
 class CnnGruSleepNet(nn.Module):
@@ -194,22 +246,61 @@ def make_model(args: argparse.Namespace, n_channels: int, n_classes: int) -> nn.
     raise ValueError(f"Unknown model: {args.model}")
 
 
-def compute_normalization_stats(X: np.ndarray, train_idx: np.ndarray, mode: str) -> tuple[np.ndarray | None, np.ndarray | None]:
+def robust_center_scale(values: np.ndarray, axis=None, keepdims: bool = False) -> tuple[np.ndarray, np.ndarray]:
+    center = np.asarray(np.median(values, axis=axis, keepdims=keepdims), dtype=np.float32)
+    q25 = np.asarray(np.percentile(values, 25, axis=axis, keepdims=keepdims), dtype=np.float32)
+    q75 = np.asarray(np.percentile(values, 75, axis=axis, keepdims=keepdims), dtype=np.float32)
+    scale = np.maximum(q75 - q25, np.asarray(1e-6, dtype=np.float32))
+    return center, scale
+
+
+def compute_normalization_stats(
+    X: np.ndarray,
+    train_idx: np.ndarray,
+    mode: str,
+    group_ids: np.ndarray | None = None,
+) -> dict | None:
     if mode == "none":
-        return None, None
+        return None
     train_values = np.asarray(X[train_idx], dtype=np.float32)
     if mode == "global":
         mean = np.asarray(train_values.mean(), dtype=np.float32)
         std = np.asarray(train_values.std(), dtype=np.float32)
+        center = mean
+        scale = std
     elif mode == "channel":
         mean = train_values.mean(axis=(0, 2, 3), keepdims=True).astype(np.float32)
         std = train_values.std(axis=(0, 2, 3), keepdims=True).astype(np.float32)
-        mean = mean.reshape(1, train_values.shape[1], 1, 1)
-        std = std.reshape(1, train_values.shape[1], 1, 1)
+        center = mean.reshape(1, train_values.shape[1], 1, 1)
+        scale = std.reshape(1, train_values.shape[1], 1, 1)
+    elif mode == "robust_global":
+        center, scale = robust_center_scale(train_values)
+    elif mode == "robust_channel":
+        center, scale = robust_center_scale(train_values, axis=(0, 2, 3), keepdims=True)
+        center = center.reshape(1, train_values.shape[1], 1, 1)
+        scale = scale.reshape(1, train_values.shape[1], 1, 1)
+    elif mode == "recording_robust":
+        if group_ids is None:
+            raise ValueError("recording_robust normalization requires group IDs")
+        fallback_center, fallback_scale = robust_center_scale(train_values, axis=(0, 2, 3), keepdims=True)
+        fallback = {
+            "center": fallback_center.reshape(1, train_values.shape[1], 1, 1),
+            "scale": fallback_scale.reshape(1, train_values.shape[1], 1, 1),
+        }
+        group_stats = {}
+        for group_id in sorted(set(group_ids.astype(str))):
+            group_idx = np.where(group_ids.astype(str) == group_id)[0]
+            group_values = np.asarray(X[group_idx], dtype=np.float32)
+            center, scale = robust_center_scale(group_values, axis=(0, 2, 3), keepdims=True)
+            group_stats[group_id] = {
+                "center": center.reshape(1, group_values.shape[1], 1, 1),
+                "scale": scale.reshape(1, group_values.shape[1], 1, 1),
+            }
+        return {"mode": mode, "group_stats": group_stats, "fallback": fallback}
     else:
         raise ValueError(f"Unknown normalization mode: {mode}")
-    std = np.maximum(std, np.asarray(1e-6, dtype=np.float32))
-    return mean, std
+    scale = np.maximum(scale, np.asarray(1e-6, dtype=np.float32))
+    return {"mode": mode, "center": center, "scale": scale}
 
 
 def summarize(y_true: np.ndarray, y_pred: np.ndarray, labels: list[int]) -> dict:
@@ -247,11 +338,48 @@ def train_one_fold(
     device: torch.device,
 ) -> tuple[np.ndarray, np.ndarray, dict]:
     fit_idx, val_idx = split_train_validation(y, train_idx, group_ids, args)
-    mean, std = compute_normalization_stats(X, fit_idx, args.normalization)
-    train_dataset = SpectrogramSequenceDataset(X, y, sequence_index, fit_idx, mean=mean, std=std)
-    val_dataset = SpectrogramSequenceDataset(X, y, sequence_index, val_idx, mean=mean, std=std)
-    test_dataset = SpectrogramSequenceDataset(X, y, sequence_index, test_idx, mean=mean, std=std)
-    train_loader = DataLoader(train_dataset, batch_size=args.batch_size, shuffle=True)
+    normalization_stats = compute_normalization_stats(X, fit_idx, args.normalization, group_ids=group_ids)
+    train_dataset = SpectrogramSequenceDataset(
+        X,
+        y,
+        sequence_index,
+        fit_idx,
+        group_ids=group_ids,
+        normalization_stats=normalization_stats,
+        clip_value=args.normalization_clip,
+        augment=args.augment,
+        time_mask_prob=args.time_mask_prob,
+        max_time_mask_fraction=args.max_time_mask_fraction,
+        freq_mask_prob=args.freq_mask_prob,
+        max_freq_mask_fraction=args.max_freq_mask_fraction,
+        channel_mask_prob=args.channel_mask_prob,
+        noise_std=args.noise_std,
+    )
+    val_dataset = SpectrogramSequenceDataset(
+        X,
+        y,
+        sequence_index,
+        val_idx,
+        group_ids=group_ids,
+        normalization_stats=normalization_stats,
+        clip_value=args.normalization_clip,
+    )
+    test_dataset = SpectrogramSequenceDataset(
+        X,
+        y,
+        sequence_index,
+        test_idx,
+        group_ids=group_ids,
+        normalization_stats=normalization_stats,
+        clip_value=args.normalization_clip,
+    )
+    train_sampler = make_balanced_sampler(y, fit_idx, args) if args.balanced_sampling else None
+    train_loader = DataLoader(
+        train_dataset,
+        batch_size=args.batch_size,
+        shuffle=train_sampler is None,
+        sampler=train_sampler,
+    )
     val_loader = DataLoader(val_dataset, batch_size=args.batch_size, shuffle=False)
     test_loader = DataLoader(test_dataset, batch_size=args.batch_size, shuffle=False)
 
@@ -329,8 +457,7 @@ def train_one_fold(
             best_epoch = epoch + 1
             best_state = {
                 "model_state_dict": {key: value.detach().cpu().clone() for key, value in model.state_dict().items()},
-                "mean": mean,
-                "std": std,
+                "normalization_stats": normalization_stats,
                 "classes": classes,
                 "args": vars(args),
                 "fold": int(fold_idx),
@@ -394,6 +521,20 @@ def split_train_validation(
     return train_idx[fit_local], train_idx[val_local]
 
 
+def make_balanced_sampler(y: np.ndarray, indices: np.ndarray, args: argparse.Namespace) -> WeightedRandomSampler:
+    labels = y[indices]
+    classes, counts = np.unique(labels, return_counts=True)
+    class_counts = {int(label): int(count) for label, count in zip(classes, counts)}
+    sample_weights = np.asarray([1.0 / class_counts[int(label)] for label in labels], dtype=np.float64)
+    if args.sampler_n1_multiplier != 1.0:
+        sample_weights[labels == 1] *= args.sampler_n1_multiplier
+    return WeightedRandomSampler(
+        weights=torch.as_tensor(sample_weights, dtype=torch.double),
+        num_samples=int(len(indices)),
+        replacement=True,
+    )
+
+
 def predict_loader(
     model: nn.Module,
     loader: DataLoader,
@@ -422,7 +563,12 @@ def main() -> None:
     parser.add_argument("--n-splits", type=int, default=5)
     parser.add_argument("--max-folds", type=int, default=None)
     parser.add_argument("--model", choices=["cnn_gru", "cnn_tcn"], default="cnn_gru")
-    parser.add_argument("--normalization", choices=["none", "global", "channel"], default="channel")
+    parser.add_argument(
+        "--normalization",
+        choices=["none", "global", "channel", "robust_global", "robust_channel", "recording_robust"],
+        default="channel",
+    )
+    parser.add_argument("--normalization-clip", type=float, default=None)
     parser.add_argument("--epochs", type=int, default=8)
     parser.add_argument("--batch-size", type=int, default=64)
     parser.add_argument("--hidden-size", type=int, default=64)
@@ -432,6 +578,15 @@ def main() -> None:
     parser.add_argument("--loss", choices=["cross_entropy", "focal"], default="cross_entropy")
     parser.add_argument("--focal-gamma", type=float, default=2.0)
     parser.add_argument("--n1-weight-multiplier", type=float, default=1.0)
+    parser.add_argument("--balanced-sampling", action="store_true")
+    parser.add_argument("--sampler-n1-multiplier", type=float, default=1.0)
+    parser.add_argument("--augment", action="store_true")
+    parser.add_argument("--time-mask-prob", type=float, default=0.0)
+    parser.add_argument("--max-time-mask-fraction", type=float, default=0.1)
+    parser.add_argument("--freq-mask-prob", type=float, default=0.0)
+    parser.add_argument("--max-freq-mask-fraction", type=float, default=0.1)
+    parser.add_argument("--channel-mask-prob", type=float, default=0.0)
+    parser.add_argument("--noise-std", type=float, default=0.0)
     parser.add_argument("--inner-val-splits", type=int, default=5)
     parser.add_argument("--validation-fraction", type=float, default=0.2)
     parser.add_argument("--early-stopping-patience", type=int, default=5)
@@ -523,6 +678,7 @@ def main() -> None:
         "sequence_radius": int(args.sequence_radius),
         "sequence_length": int(2 * args.sequence_radius + 1),
         "normalization": args.normalization,
+        "normalization_clip": args.normalization_clip,
         "epochs": int(args.epochs),
         "batch_size": int(args.batch_size),
         "hidden_size": int(args.hidden_size),
@@ -532,6 +688,15 @@ def main() -> None:
         "loss": args.loss,
         "focal_gamma": float(args.focal_gamma),
         "n1_weight_multiplier": float(args.n1_weight_multiplier),
+        "balanced_sampling": bool(args.balanced_sampling),
+        "sampler_n1_multiplier": float(args.sampler_n1_multiplier),
+        "augment": bool(args.augment),
+        "time_mask_prob": float(args.time_mask_prob),
+        "max_time_mask_fraction": float(args.max_time_mask_fraction),
+        "freq_mask_prob": float(args.freq_mask_prob),
+        "max_freq_mask_fraction": float(args.max_freq_mask_fraction),
+        "channel_mask_prob": float(args.channel_mask_prob),
+        "noise_std": float(args.noise_std),
         "inner_val_splits": int(args.inner_val_splits),
         "early_stopping_patience": int(args.early_stopping_patience),
         "early_stopping_min_delta": float(args.early_stopping_min_delta),
