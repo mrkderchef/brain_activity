@@ -1,4 +1,4 @@
-"""Train CNN-GRU sequence-to-sequence sleep-stage models on spectrogram blocks."""
+"""Train CNN sequence-to-sequence sleep-stage models on spectrogram blocks."""
 
 from __future__ import annotations
 
@@ -140,6 +140,106 @@ class CnnGruSeq2SeqNet(nn.Module):
         return self.classifier(output)
 
 
+class SinusoidalPositionalEncoding(nn.Module):
+    def __init__(self, d_model: int, dropout: float = 0.1, max_len: int = 2048):
+        super().__init__()
+        position = torch.arange(max_len, dtype=torch.float32).unsqueeze(1)
+        div_term = torch.exp(torch.arange(0, d_model, 2, dtype=torch.float32) * (-np.log(10000.0) / d_model))
+        pe = torch.zeros(max_len, d_model, dtype=torch.float32)
+        pe[:, 0::2] = torch.sin(position * div_term)
+        pe[:, 1::2] = torch.cos(position * div_term[: pe[:, 1::2].shape[1]])
+        self.register_buffer("pe", pe.unsqueeze(0), persistent=False)
+        self.dropout = nn.Dropout(dropout)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return self.dropout(x + self.pe[:, : x.shape[1]])
+
+
+class CnnTransformerSeq2SeqNet(nn.Module):
+    def __init__(
+        self,
+        n_channels: int,
+        n_classes: int,
+        hidden_size: int = 128,
+        dropout: float = 0.3,
+        n_heads: int = 4,
+        n_layers: int = 2,
+        feedforward_size: int | None = None,
+    ):
+        super().__init__()
+        if hidden_size % n_heads != 0:
+            raise ValueError(f"hidden_size={hidden_size} must be divisible by transformer heads={n_heads}")
+        feedforward_size = feedforward_size or hidden_size * 4
+        self.encoder = nn.Sequential(
+            nn.Conv2d(n_channels, 16, kernel_size=3, padding=1),
+            nn.BatchNorm2d(16),
+            nn.ReLU(),
+            nn.MaxPool2d(2),
+            nn.Conv2d(16, 32, kernel_size=3, padding=1),
+            nn.BatchNorm2d(32),
+            nn.ReLU(),
+            nn.AdaptiveAvgPool2d((4, 4)),
+            nn.Flatten(),
+        )
+        self.projection = nn.Sequential(
+            nn.Linear(32 * 4 * 4, hidden_size),
+            nn.LayerNorm(hidden_size),
+            nn.GELU(),
+            nn.Dropout(dropout),
+        )
+        self.position = SinusoidalPositionalEncoding(hidden_size, dropout=dropout)
+        encoder_layer = nn.TransformerEncoderLayer(
+            d_model=hidden_size,
+            nhead=n_heads,
+            dim_feedforward=feedforward_size,
+            dropout=dropout,
+            activation="gelu",
+            batch_first=True,
+            norm_first=True,
+        )
+        self.transformer = nn.TransformerEncoder(encoder_layer, num_layers=n_layers)
+        self.classifier = nn.Sequential(
+            nn.LayerNorm(hidden_size),
+            nn.Dropout(dropout),
+            nn.Linear(hidden_size, n_classes),
+        )
+
+    def forward(self, x: torch.Tensor, padding_mask: torch.Tensor | None = None) -> torch.Tensor:
+        batch_size, seq_len, channels, freqs, times = x.shape
+        encoded = self.encoder(x.reshape(batch_size * seq_len, channels, freqs, times))
+        encoded = self.projection(encoded).reshape(batch_size, seq_len, -1)
+        encoded = self.position(encoded)
+        output = self.transformer(encoded, src_key_padding_mask=padding_mask)
+        return self.classifier(output)
+
+
+def create_seq2seq_model(args: argparse.Namespace, n_channels: int, n_classes: int) -> nn.Module:
+    if args.model == "cnn_gru":
+        return CnnGruSeq2SeqNet(
+            n_channels=n_channels,
+            n_classes=n_classes,
+            hidden_size=args.hidden_size,
+            dropout=args.dropout,
+        )
+    if args.model == "cnn_transformer":
+        return CnnTransformerSeq2SeqNet(
+            n_channels=n_channels,
+            n_classes=n_classes,
+            hidden_size=args.hidden_size,
+            dropout=args.dropout,
+            n_heads=args.transformer_heads,
+            n_layers=args.transformer_layers,
+            feedforward_size=args.transformer_ff_size,
+        )
+    raise ValueError(f"Unsupported model: {args.model}")
+
+
+def forward_model(model: nn.Module, xb: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
+    if isinstance(model, CnnTransformerSeq2SeqNet):
+        return model(xb, padding_mask=~mask.bool())
+    return model(xb)
+
+
 def compute_channel_normalization(X: np.ndarray, train_idx: np.ndarray) -> dict:
     train_values = np.asarray(X[train_idx], dtype=np.float32)
     mean = train_values.mean(axis=(0, 2, 3), keepdims=True).astype(np.float32)
@@ -219,7 +319,7 @@ def train_epoch(
         yb = yb.to(device)
         mask = mask.to(device)
         optimizer.zero_grad(set_to_none=True)
-        logits = model(xb)
+        logits = forward_model(model, xb, mask)
         loss = criterion(logits.reshape(-1, logits.shape[-1]), yb.reshape(-1))
         loss.backward()
         optimizer.step()
@@ -241,7 +341,9 @@ def predict_dataset(
     model.eval()
     with torch.no_grad():
         for xb, _, mask, row_indices in loader:
-            logits = model(xb.to(device))
+            xb = xb.to(device)
+            mask = mask.to(device)
+            logits = forward_model(model, xb, mask)
             prob = torch.softmax(logits, dim=-1).cpu().numpy()
             pred = np.argmax(prob, axis=-1)
             mask_np = mask.numpy().astype(bool)
@@ -288,12 +390,7 @@ def train_one_fold(
     )
 
     classes = np.array(labels)
-    model = CnnGruSeq2SeqNet(
-        n_channels=X.shape[1],
-        n_classes=len(labels),
-        hidden_size=args.hidden_size,
-        dropout=args.dropout,
-    ).to(device)
+    model = create_seq2seq_model(args, n_channels=X.shape[1], n_classes=len(labels)).to(device)
     class_weights = make_class_weights(y, fit_idx, classes).to(device)
     criterion = nn.CrossEntropyLoss(weight=class_weights, ignore_index=-100)
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.learning_rate, weight_decay=args.weight_decay)
@@ -376,7 +473,7 @@ def train_one_fold(
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Train CNN-GRU sequence-to-sequence spectrogram model")
+    parser = argparse.ArgumentParser(description="Train CNN sequence-to-sequence spectrogram model")
     parser.add_argument("--spectrograms-path", required=True)
     parser.add_argument("--labels-path", required=True)
     parser.add_argument("--metadata-path", required=True)
@@ -388,8 +485,12 @@ def main() -> None:
     parser.add_argument("--max-folds", type=int, default=None)
     parser.add_argument("--epochs", type=int, default=8)
     parser.add_argument("--batch-size", type=int, default=32)
+    parser.add_argument("--model", choices=["cnn_gru", "cnn_transformer"], default="cnn_gru")
     parser.add_argument("--hidden-size", type=int, default=64)
     parser.add_argument("--dropout", type=float, default=0.3)
+    parser.add_argument("--transformer-heads", type=int, default=4)
+    parser.add_argument("--transformer-layers", type=int, default=2)
+    parser.add_argument("--transformer-ff-size", type=int, default=None)
     parser.add_argument("--learning-rate", type=float, default=1e-3)
     parser.add_argument("--weight-decay", type=float, default=1e-4)
     parser.add_argument("--early-stopping-patience", type=int, default=4)
@@ -482,7 +583,7 @@ def main() -> None:
     predictions.to_csv(output_dir / "cv_predictions.csv", index=False)
 
     result = {
-        "model": "cnn_gru_seq2seq_spectrogram",
+        "model": f"{args.model}_seq2seq_spectrogram",
         "cv": "StratifiedGroupKFold",
         "n_splits": int(args.n_splits),
         "max_folds": args.max_folds,
@@ -496,6 +597,9 @@ def main() -> None:
         "batch_size": int(args.batch_size),
         "hidden_size": int(args.hidden_size),
         "dropout": float(args.dropout),
+        "transformer_heads": int(args.transformer_heads),
+        "transformer_layers": int(args.transformer_layers),
+        "transformer_ff_size": args.transformer_ff_size,
         "learning_rate": float(args.learning_rate),
         "weight_decay": float(args.weight_decay),
         "summary": summary,

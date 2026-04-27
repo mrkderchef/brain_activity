@@ -224,6 +224,32 @@ Decision: the normalized 9-epoch CNN-GRU is the new best main model by balanced
 accuracy. The TCN variant was worse in the 2-fold smoke test and is not the next
 candidate unless redesigned.
 
+### Seq2Seq and Transformer follow-up
+
+The next sequence-to-sequence pass re-synchronized `ds006695` from OpenNeuro and
+confirmed that the local dataset still contains the same 19 EEG subjects:
+
+```text
+101, 102, 104, 105, 106, 107, 109, 110, 111, 112,
+114, 116, 117, 119, 122, 123, 124, 125, 126
+```
+
+The spectrogram tensor remains `19,563` epochs with shape `(3, 20, 116)` per
+epoch. Longer Seq2Seq blocks and a larger hidden state did not improve over the
+shorter GRU Seq2Seq baseline:
+
+| Model | Block setup | Params | Accuracy | Balanced accuracy | Macro F1 | N1 F1 |
+|---|---|---|---:|---:|---:|---:|
+| CNN-GRU Seq2Seq | length `32`, stride `16` | hidden `64`, 8 epochs | `0.6478` | `0.6049` | `0.5925` | `0.2556` |
+| CNN-GRU Seq2Seq | length `64`, stride `32` | hidden `96`, up to 160 epochs | `0.6334` | `0.5880` | `0.5783` | `0.2244` |
+| CNN-Transformer Seq2Seq | length `32`, stride `16` | hidden `96`, 2 layers, 4 heads | `0.6160` | `0.5849` | `0.5664` | `0.2199` |
+
+Decision: the simple Transformer encoder is technically working, but it did not
+beat the CNN-GRU Seq2Seq baseline. The failure mode is still subject-level
+instability and weak N1 precision, not lack of epoch count. Future gains should
+come from better inputs, N1-specific objectives, augmentation, or transfer
+learning rather than simply scaling this Seq2Seq architecture.
+
 ## Project Layout
 
 ```text
@@ -349,12 +375,20 @@ Main output:
 - `outputs/model_selection_summary/model_selection_main_candidates.csv`
 - `outputs/model_selection_summary/model_selection_all_results.csv`
 
-### Extract spectrograms and train CNN-GRU
+### Extract spectrograms and train CNN-GRU / Seq2Seq
 
 ```bash
 python scripts\extract_ds006695_spectrograms.py --bids-root ..\ds006695 --output-dir outputs\ds006695_spectrograms_all19
 
 python scripts\train_spectrogram_sequence_model.py --spectrograms-path outputs\ds006695_spectrograms_all19\X_spectrograms.npy --labels-path outputs\ds006695_spectrograms_all19\y_labels.npy --metadata-path outputs\ds006695_spectrograms_all19\epoch_metadata.csv --output-dir outputs\ds006695_spectrograms_all19_cnn_gru_norm_r4_e20_full5 --n-splits 5 --epochs 20 --batch-size 96 --sequence-radius 4 --model cnn_gru --normalization channel --early-stopping-patience 5
+```
+
+Seq2Seq block models:
+
+```bash
+python scripts\train_spectrogram_seq2seq_model.py --spectrograms-path outputs\ds006695_spectrograms_all19\X_spectrograms.npy --labels-path outputs\ds006695_spectrograms_all19\y_labels.npy --metadata-path outputs\ds006695_spectrograms_all19\epoch_metadata.csv --output-dir outputs\ds006695_spectrograms_all19_cnn_gru_seq2seq_b32_s16_e8_full5 --model cnn_gru --block-length 32 --block-stride 16 --n-splits 5 --epochs 8 --batch-size 16 --hidden-size 64
+
+python scripts\train_spectrogram_seq2seq_model.py --spectrograms-path outputs\ds006695_spectrograms_all19\X_spectrograms.npy --labels-path outputs\ds006695_spectrograms_all19\y_labels.npy --metadata-path outputs\ds006695_spectrograms_all19\epoch_metadata.csv --output-dir outputs\ds006695_spectrograms_all19_cnn_transformer_seq2seq_b32_s16_h96_l2_e40_full5 --model cnn_transformer --block-length 32 --block-stride 16 --n-splits 5 --epochs 40 --batch-size 16 --hidden-size 96 --transformer-heads 4 --transformer-layers 2 --dropout 0.25 --early-stopping-patience 8 --lr-plateau-patience 3
 ```
 
 The current best full run uses 9-epoch sequences (`sequence_radius=4`) with
@@ -407,9 +441,9 @@ Generated outputs usually include:
   the objective.
 - Spectrogram sequence modeling is now the best completed direction and
   outperforms the tabular baseline by roughly `+0.0678` balanced accuracy.
-- The next likely gains should come from longer training, larger context
-  windows, CNN-TCN/attention variants, and transfer learning from Sleep-EDF,
-  not from more Random Forest tuning.
+- The next likely gains should come from better inputs, N1-specific objectives,
+  augmentation, redesigned attention/TCN variants, and transfer learning from
+  Sleep-EDF, not from more Random Forest tuning or simply scaling epoch count.
 
 ## Further Notes
 
