@@ -9,12 +9,14 @@ first spectrogram sequence-model experiment.
 
 ## Current Status
 
-The strongest completed model is now a CNN-GRU over log-spectrogram sequence
-windows:
+The strongest completed raw model is now a CNN-GRU over longer log-spectrogram
+sequence windows. A fold-aware Viterbi smoothing pass gives the strongest
+postprocessed result:
 
 | Model | Data | Input | Evaluation | Accuracy | Balanced accuracy | Macro F1 | N1 F1 |
 |---|---|---|---|---:|---:|---:|---:|
-| CNN-GRU | `ds006695`, 19 subjects | 9-epoch log-spectrogram sequences, channel-normalized | 5-fold subject-wise CV | `0.6449` | `0.6143` | `0.5963` | `0.2592` |
+| CNN-GRU + Viterbi | `ds006695`, 19 subjects | 13-epoch log-spectrogram sequences, channel-normalized | 5-fold subject-wise CV + fold-aware smoothing | `0.6628` | `0.6222` | `0.6084` | `0.2736` |
+| CNN-GRU | `ds006695`, 19 subjects | 13-epoch log-spectrogram sequences, channel-normalized | 5-fold subject-wise CV | `0.6501` | `0.6187` | `0.6023` | `0.2839` |
 
 The strongest completed tabular baseline remains:
 
@@ -22,10 +24,11 @@ The strongest completed tabular baseline remains:
 |---|---|---|---|---:|---:|---:|---:|
 | Random Forest | `ds006695`, 19 subjects | transition features, radii `2,4,6` | 5-fold subject-wise CV | `0.5465` | `0.5465` | `0.5344` | `0.2474` |
 
-Decision: the CNN-GRU is now the best overall model by subject-wise balanced
-accuracy. The Random Forest is still useful as a classical, interpretable
-baseline, but the project should now treat spectrogram sequence modeling as the
-main performance path.
+Decision: the longer-context CNN-GRU is now the best raw model by subject-wise
+balanced accuracy. The fold-aware Viterbi result is the best postprocessed
+sensitivity result. The Random Forest is still useful as a classical,
+interpretable baseline, but the project should now treat spectrogram sequence
+modeling as the main performance path.
 
 ## Why The Project Changed Direction
 
@@ -211,18 +214,21 @@ on overall metrics. Fold 3 and the N1 variance show that it is not solved yet,
 but this is the first modeling direction that moves the project meaningfully
 above the mid-50s balanced-accuracy ceiling.
 
-The next improvement pass added fold-wise channel normalization and expanded the
-sequence context to 9 epochs (`sequence_radius=4`):
+The next improvement passes added fold-wise channel normalization and expanded
+the sequence context first to 9 epochs (`sequence_radius=4`), then to 13 epochs
+(`sequence_radius=6`) in the unattended accuracy marathon:
 
 | Model | Context | Normalization | Accuracy | Balanced accuracy | Macro F1 | N1 F1 |
 |---|---|---|---:|---:|---:|---:|
 | CNN-GRU | 5 epochs | none | `0.6432` | `0.6079` | `0.5964` | `0.2716` |
 | CNN-GRU | 9 epochs | channel-wise from training fold | `0.6449` | `0.6143` | `0.5963` | `0.2592` |
+| CNN-GRU | 13 epochs | channel-wise from training fold | `0.6501` | `0.6187` | `0.6023` | `0.2839` |
+| CNN-GRU + Viterbi | 13 epochs | channel-wise from training fold | `0.6628` | `0.6222` | `0.6084` | `0.2736` |
 | CNN-TCN smoke, first 2 folds | 9 epochs | channel-wise from training fold | `0.6240` | `0.5310` | `0.5451` | `0.2511` |
 
-Decision: the normalized 9-epoch CNN-GRU is the new best main model by balanced
-accuracy. The TCN variant was worse in the 2-fold smoke test and is not the next
-candidate unless redesigned.
+Decision: the normalized 13-epoch CNN-GRU is the best main raw model by
+balanced accuracy. Viterbi smoothing adds a small postprocessing gain, but
+should be described separately from the raw neural model.
 
 ### Seq2Seq and Transformer follow-up
 
@@ -235,14 +241,16 @@ confirmed that the local dataset still contains the same 19 EEG subjects:
 ```
 
 The spectrogram tensor remains `19,563` epochs with shape `(3, 20, 116)` per
-epoch. Longer Seq2Seq blocks and a larger hidden state did not improve over the
-shorter GRU Seq2Seq baseline:
+epoch. Longer Seq2Seq blocks, a larger hidden state, and a longer Transformer
+marathon candidate did not improve over the windowed CNN-GRU:
 
 | Model | Block setup | Params | Accuracy | Balanced accuracy | Macro F1 | N1 F1 |
 |---|---|---|---:|---:|---:|---:|
 | CNN-GRU Seq2Seq | length `32`, stride `16` | hidden `64`, 8 epochs | `0.6478` | `0.6049` | `0.5925` | `0.2556` |
+| CNN-GRU Seq2Seq | length `32`, stride `16` | hidden `96`, up to 24 epochs | `0.6350` | `0.5954` | `0.5791` | `0.2238` |
 | CNN-GRU Seq2Seq | length `64`, stride `32` | hidden `96`, up to 160 epochs | `0.6334` | `0.5880` | `0.5783` | `0.2244` |
 | CNN-Transformer Seq2Seq | length `32`, stride `16` | hidden `96`, 2 layers, 4 heads | `0.6160` | `0.5849` | `0.5664` | `0.2199` |
+| CNN-Transformer Seq2Seq | length `32`, stride `16` | hidden `128`, up to 48 epochs | `0.5930` | `0.5612` | `0.5355` | `0.1633` |
 
 Decision: the simple Transformer encoder is technically working, but it did not
 beat the CNN-GRU Seq2Seq baseline. The failure mode is still subject-level
@@ -391,9 +399,45 @@ python scripts\train_spectrogram_seq2seq_model.py --spectrograms-path outputs\ds
 python scripts\train_spectrogram_seq2seq_model.py --spectrograms-path outputs\ds006695_spectrograms_all19\X_spectrograms.npy --labels-path outputs\ds006695_spectrograms_all19\y_labels.npy --metadata-path outputs\ds006695_spectrograms_all19\epoch_metadata.csv --output-dir outputs\ds006695_spectrograms_all19_cnn_transformer_seq2seq_b32_s16_h96_l2_e40_full5 --model cnn_transformer --block-length 32 --block-stride 16 --n-splits 5 --epochs 40 --batch-size 16 --hidden-size 96 --transformer-heads 4 --transformer-layers 2 --dropout 0.25 --early-stopping-patience 8 --lr-plateau-patience 3
 ```
 
-The current best full run uses 9-epoch sequences (`sequence_radius=4`) with
+The current best raw full run uses 13-epoch sequences (`sequence_radius=6`) with
 channel-wise train-fold normalization and writes results to
-`outputs\ds006695_spectrograms_all19_cnn_gru_norm_r4_e8_full5`.
+`outputs\accuracy_marathon\exp_03_gru_r6_long_context`. Its best Viterbi
+postprocessing sweep is in
+`outputs\accuracy_marathon\exp_03_gru_r6_long_context_viterbi`.
+
+An experimental follow-up model is available as `cnn_gru_attention`. It keeps
+the center-epoch GRU representation, but also learns an attention-pooled summary
+over the neighboring epochs. This is the next recommended full candidate
+because N1 and transition errors are exactly where fixed center-only pooling is
+least expressive:
+
+```bash
+python scripts\train_spectrogram_sequence_model.py --spectrograms-path outputs\ds006695_spectrograms_all19\X_spectrograms.npy --labels-path outputs\ds006695_spectrograms_all19\y_labels.npy --metadata-path outputs\ds006695_spectrograms_all19\epoch_metadata.csv --output-dir outputs\ds006695_spectrograms_all19_cnn_gru_attention_r4_e12_full5 --n-splits 5 --epochs 12 --batch-size 96 --sequence-radius 4 --model cnn_gru_attention --normalization channel --label-smoothing 0.05 --grad-clip-norm 1.0 --early-stopping-patience 5
+```
+
+For a longer unattended search, run the accuracy marathon. It executes ten full
+5-fold candidates sequentially, then applies fold-aware Viterbi smoothing to
+each finished model and keeps a live ranking in
+`outputs\accuracy_marathon\accuracy_experiment_summary.md`. A committed summary
+of the completed run is in `docs\accuracy_marathon_summary.md`:
+
+```powershell
+.\scripts\start_accuracy_experiments.ps1
+```
+
+If local PowerShell scripts are blocked on Windows, use:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\start_accuracy_experiments.ps1
+```
+
+Foreground/resume form:
+
+```bash
+python scripts\run_accuracy_experiments.py --root-dir outputs\accuracy_marathon
+python scripts\run_accuracy_experiments.py --root-dir outputs\accuracy_marathon --start-at exp_05_gru_aug_r4
+python scripts\summarize_accuracy_experiments.py --root-dir outputs\accuracy_marathon
+```
 
 The spectrogram training script now uses an inner group-aware validation split
 inside each outer subject-wise fold. It saves the best checkpoint per fold under
@@ -439,11 +483,16 @@ Generated outputs usually include:
 - Transition-aware tabular features are the best completed classical baseline.
 - N1 remains the hardest class; threshold tuning can improve recall but changes
   the objective.
-- Spectrogram sequence modeling is now the best completed direction and
-  outperforms the tabular baseline by roughly `+0.0678` balanced accuracy.
-- The next likely gains should come from better inputs, N1-specific objectives,
-  augmentation, redesigned attention/TCN variants, and transfer learning from
-  Sleep-EDF, not from more Random Forest tuning or simply scaling epoch count.
+- Spectrogram sequence modeling is now the best completed direction. The best
+  raw model outperforms the tabular baseline by roughly `+0.0722` balanced
+  accuracy; the Viterbi-smoothed result raises that gap to roughly `+0.0757`.
+- The latest marathon suggests longer temporal context helped more than
+  attention pooling, light augmentation, N1 weighting, balanced sampling, or
+  the tested Seq2Seq/Transformer variants.
+- The next likely gains should come from better inputs, stronger N1-specific
+  objectives, more principled temporal postprocessing, or transfer learning
+  from Sleep-EDF, not from more Random Forest tuning or simply scaling epoch
+  count.
 
 ## Further Notes
 
@@ -452,3 +501,5 @@ Generated outputs usually include:
   history, and experiment chronology.
 - See `docs/sota_sleep_staging_research.md` for why stronger sleep-staging
   systems usually move toward raw/spectrogram sequence models.
+- See `docs/accuracy_marathon_summary.md` for the completed 10-run spectrogram
+  marathon and final ranking.

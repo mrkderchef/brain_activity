@@ -172,6 +172,47 @@ class CnnGruSleepNet(nn.Module):
         return self.classifier(center)
 
 
+class CnnGruAttentionSleepNet(nn.Module):
+    def __init__(self, n_channels: int, n_classes: int = 5, hidden_size: int = 64, dropout: float = 0.3):
+        super().__init__()
+        self.encoder = nn.Sequential(
+            nn.Conv2d(n_channels, 16, kernel_size=3, padding=1),
+            nn.BatchNorm2d(16),
+            nn.ReLU(),
+            nn.MaxPool2d(2),
+            nn.Conv2d(16, 32, kernel_size=3, padding=1),
+            nn.BatchNorm2d(32),
+            nn.ReLU(),
+            nn.AdaptiveAvgPool2d((4, 4)),
+            nn.Flatten(),
+        )
+        self.gru = nn.GRU(
+            input_size=32 * 4 * 4,
+            hidden_size=hidden_size,
+            batch_first=True,
+            bidirectional=True,
+        )
+        self.attention = nn.Sequential(
+            nn.Linear(hidden_size * 2, hidden_size),
+            nn.Tanh(),
+            nn.Linear(hidden_size, 1),
+        )
+        self.classifier = nn.Sequential(
+            nn.Dropout(dropout),
+            nn.Linear(hidden_size * 4, n_classes),
+        )
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        batch_size, seq_len, channels, freqs, times = x.shape
+        encoded = self.encoder(x.reshape(batch_size * seq_len, channels, freqs, times))
+        encoded = encoded.reshape(batch_size, seq_len, -1)
+        output, _ = self.gru(encoded)
+        attention_weights = torch.softmax(self.attention(output), dim=1)
+        context = torch.sum(output * attention_weights, dim=1)
+        center = output[:, seq_len // 2, :]
+        return self.classifier(torch.cat([center, context], dim=1))
+
+
 class CnnTcnSleepNet(nn.Module):
     def __init__(self, n_channels: int, n_classes: int = 5, hidden_size: int = 64, dropout: float = 0.3):
         super().__init__()
@@ -231,6 +272,13 @@ class FocalLoss(nn.Module):
 def make_model(args: argparse.Namespace, n_channels: int, n_classes: int) -> nn.Module:
     if args.model == "cnn_gru":
         return CnnGruSleepNet(
+            n_channels=n_channels,
+            n_classes=n_classes,
+            hidden_size=args.hidden_size,
+            dropout=args.dropout,
+        )
+    if args.model == "cnn_gru_attention":
+        return CnnGruAttentionSleepNet(
             n_channels=n_channels,
             n_classes=n_classes,
             hidden_size=args.hidden_size,
@@ -396,7 +444,10 @@ def train_one_fold(
         class_weights[int(n1_positions[0])] *= args.n1_weight_multiplier
     class_weight_tensor = torch.tensor(class_weights, dtype=torch.float32, device=device)
     if args.loss == "cross_entropy":
-        criterion = nn.CrossEntropyLoss(weight=class_weight_tensor)
+        criterion = nn.CrossEntropyLoss(
+            weight=class_weight_tensor,
+            label_smoothing=args.label_smoothing,
+        )
     elif args.loss == "focal":
         criterion = FocalLoss(weight=class_weight_tensor, gamma=args.focal_gamma)
     else:
@@ -425,6 +476,8 @@ def train_one_fold(
             logits = model(xb)
             loss = criterion(logits, yb)
             loss.backward()
+            if args.grad_clip_norm > 0:
+                nn.utils.clip_grad_norm_(model.parameters(), max_norm=args.grad_clip_norm)
             optimizer.step()
             total_loss += float(loss.item()) * len(yb)
         train_loss = total_loss / len(train_dataset)
@@ -562,7 +615,7 @@ def main() -> None:
     parser.add_argument("--sequence-radius", type=int, default=2)
     parser.add_argument("--n-splits", type=int, default=5)
     parser.add_argument("--max-folds", type=int, default=None)
-    parser.add_argument("--model", choices=["cnn_gru", "cnn_tcn"], default="cnn_gru")
+    parser.add_argument("--model", choices=["cnn_gru", "cnn_gru_attention", "cnn_tcn"], default="cnn_gru")
     parser.add_argument(
         "--normalization",
         choices=["none", "global", "channel", "robust_global", "robust_channel", "recording_robust"],
@@ -577,6 +630,8 @@ def main() -> None:
     parser.add_argument("--weight-decay", type=float, default=1e-4)
     parser.add_argument("--loss", choices=["cross_entropy", "focal"], default="cross_entropy")
     parser.add_argument("--focal-gamma", type=float, default=2.0)
+    parser.add_argument("--label-smoothing", type=float, default=0.0)
+    parser.add_argument("--grad-clip-norm", type=float, default=0.0)
     parser.add_argument("--n1-weight-multiplier", type=float, default=1.0)
     parser.add_argument("--balanced-sampling", action="store_true")
     parser.add_argument("--sampler-n1-multiplier", type=float, default=1.0)
@@ -687,6 +742,8 @@ def main() -> None:
         "weight_decay": float(args.weight_decay),
         "loss": args.loss,
         "focal_gamma": float(args.focal_gamma),
+        "label_smoothing": float(args.label_smoothing),
+        "grad_clip_norm": float(args.grad_clip_norm),
         "n1_weight_multiplier": float(args.n1_weight_multiplier),
         "balanced_sampling": bool(args.balanced_sampling),
         "sampler_n1_multiplier": float(args.sampler_n1_multiplier),
