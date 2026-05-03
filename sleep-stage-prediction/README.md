@@ -405,17 +405,33 @@ channel-wise train-fold normalization and writes results to
 postprocessing sweep is in
 `outputs\accuracy_marathon\exp_03_gru_r6_long_context_viterbi`.
 
-An experimental follow-up model is available as `cnn_gru_attention`. It keeps
-the center-epoch GRU representation, but also learns an attention-pooled summary
-over the neighboring epochs. This is the next recommended full candidate
-because N1 and transition errors are exactly where fixed center-only pooling is
-least expressive:
+An SE/residual follow-up model is available as `cnn_gru_se`. It is a practical
+local adaptation of the strongest public sleep-staging direction found in the
+latest survey: U-Sleep/SE-Res-U-Net-style convolutional feature extraction, but
+fitted to this repo's saved spectrogram windows. It uses multi-scale
+spectrogram convolutions, residual squeeze-excitation blocks, BiGRU temporal
+context, and attention pooling over the 13-epoch window:
 
 ```bash
-python scripts\train_spectrogram_sequence_model.py --spectrograms-path outputs\ds006695_spectrograms_all19\X_spectrograms.npy --labels-path outputs\ds006695_spectrograms_all19\y_labels.npy --metadata-path outputs\ds006695_spectrograms_all19\epoch_metadata.csv --output-dir outputs\ds006695_spectrograms_all19_cnn_gru_attention_r4_e12_full5 --n-splits 5 --epochs 12 --batch-size 96 --sequence-radius 4 --model cnn_gru_attention --normalization channel --label-smoothing 0.05 --grad-clip-norm 1.0 --early-stopping-patience 5
+python scripts\train_spectrogram_sequence_model.py --spectrograms-path outputs\ds006695_spectrograms_all19\X_spectrograms.npy --labels-path outputs\ds006695_spectrograms_all19\y_labels.npy --metadata-path outputs\ds006695_spectrograms_all19\epoch_metadata.csv --output-dir outputs\ds006695_spectrograms_all19_cnn_gru_se_r6_e18_full5 --n-splits 5 --epochs 18 --batch-size 64 --sequence-radius 6 --model cnn_gru_se --hidden-size 96 --dropout 0.35 --normalization robust_channel --normalization-clip 6.0 --label-smoothing 0.05 --grad-clip-norm 1.0 --early-stopping-patience 7
 ```
 
-For a longer unattended search, run the accuracy marathon. It executes ten full
+The older `cnn_gru_attention` option is still available as a lighter ablation:
+it keeps the center-epoch GRU representation, but also learns an
+attention-pooled summary over neighboring epochs.
+
+Completed `cnn_gru_se` result:
+
+| Model | Context | Normalization | Accuracy | Balanced accuracy | Macro F1 | N1 F1 |
+|---|---|---|---:|---:|---:|---:|
+| CNN-GRU-SE | 13 epochs | robust channel, clipped | `0.5960` | `0.5687` | `0.5577` | `0.2495` |
+
+Decision: do not switch the main model to `cnn_gru_se`. The stronger encoder
+looked promising from the literature, but generalized worse across held-out
+subjects than the simpler 13-epoch CNN-GRU. Treat it as a useful negative
+result showing that extra convolutional capacity is not the current bottleneck.
+
+For a longer unattended search, run the accuracy marathon. It executes the full
 5-fold candidates sequentially, then applies fold-aware Viterbi smoothing to
 each finished model and keeps a live ranking in
 `outputs\accuracy_marathon\accuracy_experiment_summary.md`. A committed summary

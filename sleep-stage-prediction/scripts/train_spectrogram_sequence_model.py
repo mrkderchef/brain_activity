@@ -213,6 +213,120 @@ class CnnGruAttentionSleepNet(nn.Module):
         return self.classifier(torch.cat([center, context], dim=1))
 
 
+class SqueezeExcitation2d(nn.Module):
+    def __init__(self, channels: int, reduction: int = 8):
+        super().__init__()
+        hidden = max(4, channels // reduction)
+        self.gate = nn.Sequential(
+            nn.AdaptiveAvgPool2d(1),
+            nn.Conv2d(channels, hidden, kernel_size=1),
+            nn.ReLU(),
+            nn.Conv2d(hidden, channels, kernel_size=1),
+            nn.Sigmoid(),
+        )
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return x * self.gate(x)
+
+
+class SeResidualBlock2d(nn.Module):
+    def __init__(self, in_channels: int, out_channels: int, stride: int = 1, dropout: float = 0.0):
+        super().__init__()
+        self.body = nn.Sequential(
+            nn.Conv2d(in_channels, out_channels, kernel_size=3, stride=stride, padding=1, bias=False),
+            nn.BatchNorm2d(out_channels),
+            nn.GELU(),
+            nn.Dropout2d(dropout),
+            nn.Conv2d(out_channels, out_channels, kernel_size=3, padding=1, bias=False),
+            nn.BatchNorm2d(out_channels),
+            SqueezeExcitation2d(out_channels),
+        )
+        if stride != 1 or in_channels != out_channels:
+            self.skip = nn.Sequential(
+                nn.Conv2d(in_channels, out_channels, kernel_size=1, stride=stride, bias=False),
+                nn.BatchNorm2d(out_channels),
+            )
+        else:
+            self.skip = nn.Identity()
+        self.activation = nn.GELU()
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return self.activation(self.body(x) + self.skip(x))
+
+
+class MultiScaleSeSpectrogramEncoder(nn.Module):
+    def __init__(self, n_channels: int, embedding_size: int, dropout: float = 0.2):
+        super().__init__()
+        branch_channels = 16
+        self.branches = nn.ModuleList(
+            [
+                nn.Sequential(
+                    nn.Conv2d(n_channels, branch_channels, kernel_size=kernel, padding=padding, bias=False),
+                    nn.BatchNorm2d(branch_channels),
+                    nn.GELU(),
+                )
+                for kernel, padding in [((3, 3), (1, 1)), ((5, 3), (2, 1)), ((3, 7), (1, 3))]
+            ]
+        )
+        self.stem = nn.Sequential(
+            nn.Conv2d(branch_channels * len(self.branches), 32, kernel_size=1, bias=False),
+            nn.BatchNorm2d(32),
+            nn.GELU(),
+        )
+        self.blocks = nn.Sequential(
+            SeResidualBlock2d(32, 48, stride=2, dropout=dropout * 0.5),
+            SeResidualBlock2d(48, 64, stride=2, dropout=dropout * 0.5),
+            SeResidualBlock2d(64, 64, stride=1, dropout=dropout * 0.5),
+            nn.AdaptiveAvgPool2d((4, 4)),
+            nn.Flatten(),
+            nn.Dropout(dropout),
+            nn.Linear(64 * 4 * 4, embedding_size),
+            nn.GELU(),
+        )
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        x = torch.cat([branch(x) for branch in self.branches], dim=1)
+        return self.blocks(self.stem(x))
+
+
+class CnnGruSeSleepNet(nn.Module):
+    """SE/residual multi-scale encoder plus BiGRU context for spectrogram windows."""
+
+    def __init__(self, n_channels: int, n_classes: int = 5, hidden_size: int = 64, dropout: float = 0.3):
+        super().__init__()
+        self.encoder = MultiScaleSeSpectrogramEncoder(
+            n_channels=n_channels,
+            embedding_size=hidden_size,
+            dropout=dropout,
+        )
+        self.gru = nn.GRU(
+            input_size=hidden_size,
+            hidden_size=hidden_size,
+            batch_first=True,
+            bidirectional=True,
+        )
+        self.attention = nn.Sequential(
+            nn.Linear(hidden_size * 2, hidden_size),
+            nn.Tanh(),
+            nn.Linear(hidden_size, 1),
+        )
+        self.classifier = nn.Sequential(
+            nn.LayerNorm(hidden_size * 4),
+            nn.Dropout(dropout),
+            nn.Linear(hidden_size * 4, n_classes),
+        )
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        batch_size, seq_len, channels, freqs, times = x.shape
+        encoded = self.encoder(x.reshape(batch_size * seq_len, channels, freqs, times))
+        encoded = encoded.reshape(batch_size, seq_len, -1)
+        output, _ = self.gru(encoded)
+        attention_weights = torch.softmax(self.attention(output), dim=1)
+        context = torch.sum(output * attention_weights, dim=1)
+        center = output[:, seq_len // 2, :]
+        return self.classifier(torch.cat([center, context], dim=1))
+
+
 class CnnTcnSleepNet(nn.Module):
     def __init__(self, n_channels: int, n_classes: int = 5, hidden_size: int = 64, dropout: float = 0.3):
         super().__init__()
@@ -279,6 +393,13 @@ def make_model(args: argparse.Namespace, n_channels: int, n_classes: int) -> nn.
         )
     if args.model == "cnn_gru_attention":
         return CnnGruAttentionSleepNet(
+            n_channels=n_channels,
+            n_classes=n_classes,
+            hidden_size=args.hidden_size,
+            dropout=args.dropout,
+        )
+    if args.model == "cnn_gru_se":
+        return CnnGruSeSleepNet(
             n_channels=n_channels,
             n_classes=n_classes,
             hidden_size=args.hidden_size,
@@ -615,7 +736,7 @@ def main() -> None:
     parser.add_argument("--sequence-radius", type=int, default=2)
     parser.add_argument("--n-splits", type=int, default=5)
     parser.add_argument("--max-folds", type=int, default=None)
-    parser.add_argument("--model", choices=["cnn_gru", "cnn_gru_attention", "cnn_tcn"], default="cnn_gru")
+    parser.add_argument("--model", choices=["cnn_gru", "cnn_gru_attention", "cnn_gru_se", "cnn_tcn"], default="cnn_gru")
     parser.add_argument(
         "--normalization",
         choices=["none", "global", "channel", "robust_global", "robust_channel", "recording_robust"],

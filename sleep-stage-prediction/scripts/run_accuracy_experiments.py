@@ -67,6 +67,43 @@ def base_seq2seq_args(output_dir: Path) -> list[str]:
 def build_experiments(root_dir: Path) -> list[Experiment]:
     return [
         Experiment(
+            name="exp_00_se_res_gru_r6",
+            script="train_spectrogram_sequence_model.py",
+            args=tuple(
+                base_window_args(root_dir / "exp_00_se_res_gru_r6")
+                + [
+                    "--model",
+                    "cnn_gru_se",
+                    "--sequence-radius",
+                    "6",
+                    "--epochs",
+                    "18",
+                    "--batch-size",
+                    "64",
+                    "--hidden-size",
+                    "96",
+                    "--dropout",
+                    "0.35",
+                    "--normalization",
+                    "robust_channel",
+                    "--normalization-clip",
+                    "6.0",
+                    "--label-smoothing",
+                    "0.05",
+                    "--learning-rate",
+                    "0.0007",
+                    "--weight-decay",
+                    "0.0002",
+                    "--seed",
+                    "41",
+                ]
+            ),
+            notes=(
+                "SE/residual multi-scale spectrogram encoder inspired by U-Sleep/SE-Res-U-Net, "
+                "with 13-epoch GRU context."
+            ),
+        ),
+        Experiment(
             name="exp_01_gru_r4_e18_smooth",
             script="train_spectrogram_sequence_model.py",
             args=tuple(
@@ -465,7 +502,7 @@ def write_manifest(root_dir: Path, experiments: list[Experiment]) -> None:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Run 10 full accuracy experiments sequentially")
+    parser = argparse.ArgumentParser(description="Run full accuracy experiments sequentially")
     parser.add_argument("--root-dir", default=str(DEFAULT_ROOT_DIR))
     parser.add_argument("--force", action="store_true", help="rerun experiments even if metrics.json exists")
     parser.add_argument("--start-at", default=None, help="experiment name to start from")

@@ -2,6 +2,11 @@
 
 Research date: 2026-04-25
 
+Update: 2026-05-02. A fresh GitHub/platform check found that the most useful
+new direction for this repo is not a gated foundation transformer, but a
+U-Sleep/SE-Res-U-Net-style convolutional sequence model adapted to the existing
+spectrogram tensors.
+
 ## Why the Current Score Feels Bad
 
 The current best project model is:
@@ -86,6 +91,36 @@ U-Sleep is a large fully convolutional model trained/evaluated across many PSG d
 | Mean across stages | 0.79 |
 
 Interpretation: even a very strong, broad deep-learning system still has N1 as the weak class. So expecting N1 near 90 is not realistic; expecting overall accuracy near 90 may be possible only with strong raw PSG modeling and favorable data.
+
+### SE-Res-U-Net
+
+A 2025 Scientific Reports paper reports a residual squeeze-excitation U-Net for
+single-channel EEG sleep staging on Sleep-EDF-20, Sleep-EDF-78, and SHHS. The
+headline numbers are high, with reported accuracy up to 94%, mean F1 up to
+87.1%, and kappa up to 0.84. Its public implementation is on Kaggle rather than
+GitHub, but the architectural pattern is relevant here: residual convolutional
+feature extraction plus squeeze-excitation attention.
+
+Project implication: use this as an architectural cue, not a directly
+comparable benchmark. The repo now includes `cnn_gru_se`, a spectrogram-window
+adaptation with multi-scale convolution, residual SE blocks, BiGRU context, and
+attention pooling.
+
+Result: the local adaptation did not improve the benchmark. A standalone
+5-fold subject-wise run reached accuracy `0.5960`, balanced accuracy `0.5687`,
+macro F1 `0.5577`, and N1 F1 `0.2495`, below the existing 13-epoch CNN-GRU
+raw result of balanced accuracy `0.6187`. The likely lesson is that this
+dataset is currently limited more by subject shift, input/channel constraints,
+and data volume than by convolutional encoder capacity.
+
+### PFTSleep
+
+PFTSleep is a 2025 foundation-transformer package for full-night sleep staging.
+It is promising, but it is not the best immediate switch for this project:
+inference expects referenced EEG, left EOG, EMG, and ECG channels, uses an
+8-hour fixed input, and requires gated Hugging Face model access. `ds006695`
+currently gives this pipeline three forehead EEG channels, so a local
+spectrogram model is a cleaner next implementation.
 
 ### SSC-EOG
 
@@ -195,6 +230,27 @@ Next implementation steps:
 4. Try a redesigned attention/TCN variant; the first simple CNN-TCN smoke test was worse than CNN-GRU.
 5. Use Sleep-EDF / `NM000185` for pretraining once the supervised spectrogram pipeline is stable.
 
+Implemented 2026-05-02:
+
+- Added `cnn_gru_se` to `scripts/train_spectrogram_sequence_model.py`.
+- Added `exp_00_se_res_gru_r6` to `scripts/run_accuracy_experiments.py`.
+- Standalone full-run command:
+
+```bash
+python scripts\train_spectrogram_sequence_model.py --spectrograms-path outputs\ds006695_spectrograms_all19\X_spectrograms.npy --labels-path outputs\ds006695_spectrograms_all19\y_labels.npy --metadata-path outputs\ds006695_spectrograms_all19\epoch_metadata.csv --output-dir outputs\ds006695_spectrograms_all19_cnn_gru_se_r6_e18_full5 --n-splits 5 --epochs 18 --batch-size 64 --sequence-radius 6 --model cnn_gru_se --hidden-size 96 --dropout 0.35 --normalization robust_channel --normalization-clip 6.0 --label-smoothing 0.05 --grad-clip-norm 1.0 --early-stopping-patience 7
+```
+
+Completed 2026-05-03:
+
+| Model | Accuracy | Balanced accuracy | Macro F1 | N1 F1 |
+|---|---:|---:|---:|---:|
+| CNN-GRU-SE | `0.5960` | `0.5687` | `0.5577` | `0.2495` |
+
+Decision: do not replace the current main model. Keep `cnn_gru_se` in the code
+as a documented ablation, but prioritize transfer learning, better inputs, or
+more principled subject/domain robustness over simply increasing encoder
+complexity.
+
 ## Sources
 
 - DeepSleepNet GitHub: https://github.com/akaraspt/deepsleepnet
@@ -204,5 +260,8 @@ Next implementation steps:
 - DeepSleepNet abstract/performance: https://pubmed.ncbi.nlm.nih.gov/28678710/
 - DeepSleepNet-Lite abstract/performance: https://pubmed.ncbi.nlm.nih.gov/34648450/
 - U-Sleep paper: https://www.nature.com/articles/s41746-021-00440-5
+- U-Time / U-Sleep GitHub: https://github.com/perslev/U-Time
+- SE-Res-U-Net paper: https://www.nature.com/articles/s41598-025-00742-8
+- PFTSleep GitHub: https://github.com/benmfox/PFTSleep
 - EEGSNet / spectrogram CNN+BiLSTM: https://pubmed.ncbi.nlm.nih.gov/35627856/
 - 1D-CNN PSG sleep-stage model: https://pmc.ncbi.nlm.nih.gov/articles/PMC6406978/

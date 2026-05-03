@@ -42,6 +42,33 @@ Fold-aware Viterbi smoothing gave the best postprocessed number. It should be
 reported separately from the raw model because its transition weight was chosen
 after a sweep on the cross-validation predictions.
 
+## SE/Residual Follow-Up
+
+After the marathon, a stronger `cnn_gru_se` candidate was added and tested as a
+standalone 5-fold subject-wise run. It used 13-epoch spectrogram windows,
+multi-scale convolution branches, residual squeeze-excitation blocks, BiGRU
+temporal context, attention pooling, robust channel normalization, and clipping.
+
+| Experiment | Model | Context | Accuracy | Balanced accuracy | Macro F1 | N1 F1 |
+|---|---|---|---:|---:|---:|---:|
+| `ds006695_spectrograms_all19_cnn_gru_se_r6_e18_full5` | CNN-GRU-SE | 13 epochs | `0.5960` | `0.5687` | `0.5577` | `0.2495` |
+
+Fold-level results:
+
+| Fold | Accuracy | Balanced accuracy | Macro F1 | N1 F1 | Best epoch |
+|---:|---:|---:|---:|---:|---:|
+| 1 | `0.6372` | `0.6278` | `0.6001` | `0.2795` | 11 |
+| 2 | `0.6560` | `0.5846` | `0.5929` | `0.2342` | 4 |
+| 3 | `0.5984` | `0.5636` | `0.5476` | `0.1488` | 3 |
+| 4 | `0.5713` | `0.5236` | `0.5098` | `0.2709` | 6 |
+| 5 | `0.5210` | `0.5581` | `0.5072` | `0.2729` | 2 |
+
+Decision: keep the simpler 13-epoch CNN-GRU as the best raw model. The
+SE/residual encoder was inspired by stronger public architectures, but on this
+small three-channel forehead EEG benchmark it overfit the inner validation
+subjects and transferred worse to held-out subjects. This is a useful negative
+result: more convolutional capacity is not the next bottleneck.
+
 ## Reproduction
 
 ```powershell
