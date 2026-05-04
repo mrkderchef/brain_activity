@@ -316,6 +316,109 @@ python scripts\download_openneuro_subset.py --dataset ds006695 --target-dir ..\d
 python scripts\extract_external_bids_sleep.py --bids-root ..\ds006695 --dataset-id ds006695 --preset ds006695 --output-dir outputs\ds006695_features
 ```
 
+### Download and extract Sleep-EDF Expanded
+
+Sleep-EDF is the next external benchmark/pretraining corpus. Start with two
+records before downloading the full dataset:
+
+```bash
+python scripts\download_sleep_edf_subset.py --target-dir ..\sleep-edf --record SC4001E0 --record SC4011E0
+```
+
+Extract single-channel log-spectrogram tensors from the paired PSG and
+hypnogram EDF files:
+
+```bash
+python scripts\extract_sleep_edf_spectrograms.py --sleep-edf-root ..\sleep-edf --output-dir outputs\sleep_edf_spectrogram_smoke --channel "EEG Fpz-Cz" --limit-recordings 2
+```
+
+For a quick shape-compatible experiment with the existing `ds006695`
+spectrogram dimensions, resize the Sleep-EDF spectrogram grids during export:
+
+```bash
+python scripts\extract_sleep_edf_spectrograms.py --sleep-edf-root ..\sleep-edf --output-dir outputs\sleep_edf_spectrogram_smoke_ds006695_shape --channel "EEG Fpz-Cz" --target-freq-bins 20 --target-time-bins 116 --limit-recordings 2
+```
+
+Then run a subject-wise Sleep-EDF smoke model:
+
+```bash
+python scripts\train_spectrogram_sequence_model.py --spectrograms-path outputs\sleep_edf_spectrogram_smoke\X_spectrograms.npy --labels-path outputs\sleep_edf_spectrogram_smoke\y_labels.npy --metadata-path outputs\sleep_edf_spectrogram_smoke\epoch_metadata.csv --output-dir outputs\sleep_edf_cnn_gru_smoke --n-splits 2 --max-folds 2 --model cnn_gru --sequence-radius 6 --epochs 8 --batch-size 64 --hidden-size 80 --normalization channel
+```
+
+First fuller Sleep-EDF subset run:
+
+```bash
+python scripts\download_sleep_edf_subset.py --target-dir ..\sleep-edf --max-records 6
+python scripts\extract_sleep_edf_spectrograms.py --sleep-edf-root ..\sleep-edf --output-dir outputs\sleep_edf_spectrogram_first6 --channel "EEG Fpz-Cz" --limit-recordings 6
+python scripts\train_spectrogram_sequence_model.py --spectrograms-path outputs\sleep_edf_spectrogram_first6\X_spectrograms.npy --labels-path outputs\sleep_edf_spectrogram_first6\y_labels.npy --metadata-path outputs\sleep_edf_spectrogram_first6\epoch_metadata.csv --output-dir outputs\sleep_edf_first6_cnn_gru_r6_e16_full5 --n-splits 5 --model cnn_gru --sequence-radius 6 --epochs 16 --batch-size 64 --hidden-size 80 --dropout 0.35 --normalization channel --label-smoothing 0.05 --learning-rate 0.0007 --weight-decay 0.0002 --grad-clip-norm 1.0 --early-stopping-patience 7 --lr-plateau-patience 2 --seed 44
+python scripts\smooth_predictions_viterbi.py --predictions-path outputs\sleep_edf_first6_cnn_gru_r6_e16_full5\cv_predictions.csv --output-dir outputs\sleep_edf_first6_cnn_gru_r6_e16_full5_viterbi
+```
+
+Completed first-six-record result:
+
+| Dataset | Records | Model | Accuracy | Balanced accuracy | Macro F1 | N1 F1 |
+|---|---:|---|---:|---:|---:|---:|
+| Sleep-EDF Expanded | 6 | CNN-GRU, 13-epoch context | `0.7476` | `0.7712` | `0.7297` | `0.4815` |
+| Sleep-EDF Expanded | 6 | CNN-GRU + Viterbi | n/a | `0.7735` | n/a | n/a |
+
+Decision: this confirms the code path and the model architecture can reach a
+much stronger benchmark score on a more standard PSG corpus. The weaker
+`ds006695` result is therefore mainly a data/domain/input limitation, not proof
+that the CNN-GRU sequence architecture is broken.
+
+Expanded 20-record Sleep-EDF benchmark:
+
+```bash
+python scripts\download_sleep_edf_subset.py --target-dir ..\sleep-edf --max-records 20
+python scripts\extract_sleep_edf_spectrograms.py --sleep-edf-root ..\sleep-edf --output-dir outputs\sleep_edf_spectrogram_first20 --channel "EEG Fpz-Cz" --limit-recordings 20
+python scripts\train_spectrogram_sequence_model.py --spectrograms-path outputs\sleep_edf_spectrogram_first20\X_spectrograms.npy --labels-path outputs\sleep_edf_spectrogram_first20\y_labels.npy --metadata-path outputs\sleep_edf_spectrogram_first20\epoch_metadata.csv --output-dir outputs\sleep_edf_first20_cnn_gru_r6_e10_full5 --n-splits 5 --model cnn_gru --sequence-radius 6 --epochs 10 --batch-size 96 --hidden-size 80 --dropout 0.35 --normalization channel --label-smoothing 0.05 --learning-rate 0.0007 --weight-decay 0.0002 --grad-clip-norm 1.0 --early-stopping-patience 5 --lr-plateau-patience 2 --seed 44
+python scripts\analyze_sleep_edf_results.py --predictions-path outputs\sleep_edf_first20_cnn_gru_r6_e10_full5\cv_predictions.csv --output-dir outputs\sleep_edf_first20_cnn_gru_r6_e10_full5_analysis
+```
+
+Completed first-20-record result:
+
+| Dataset | Records | Epochs | Model | Accuracy | Balanced accuracy | Macro F1 | N1 F1 |
+|---|---:|---:|---|---:|---:|---:|---:|
+| Sleep-EDF Expanded | 20 | `21,039` | CNN-GRU, 13-epoch context | `0.8337` | `0.8198` | `0.7968` | `0.5166` |
+| Sleep-EDF Expanded | 20 | `21,039` | CNN-GRU + Viterbi | n/a | `0.8198` | n/a | n/a |
+
+Fold-level range:
+
+| Fold | Balanced accuracy | Macro F1 | N1 F1 |
+|---:|---:|---:|---:|
+| 1 | `0.8665` | `0.8218` | `0.5470` |
+| 2 | `0.8112` | `0.7824` | `0.5213` |
+| 3 | `0.8221` | `0.7980` | `0.5393` |
+| 4 | `0.8406` | `0.7959` | `0.5000` |
+| 5 | `0.7926` | `0.7766` | `0.4715` |
+
+The record-level analysis is in
+`outputs\sleep_edf_first20_cnn_gru_r6_e10_full5_analysis\sleep_edf_result_analysis.md`.
+The weakest held-out record was `SC4011` with balanced accuracy `0.7193`; the
+strongest was `SC4061` with balanced accuracy `0.9262`. N1 remains the weak
+class, but improves substantially compared with `ds006695`.
+
+### Cross-dataset transfer checks
+
+Direct transfer was tested after resizing Sleep-EDF spectrograms to the
+`ds006695` grid and averaging `ds006695` channels to one channel:
+
+```bash
+python scripts\extract_sleep_edf_spectrograms.py --sleep-edf-root ..\sleep-edf --output-dir outputs\sleep_edf_spectrogram_first20_ds006695_shape --channel "EEG Fpz-Cz" --target-freq-bins 20 --target-time-bins 116 --limit-recordings 20
+python scripts\average_spectrogram_channels.py --spectrograms-path outputs\ds006695_spectrograms_all19\X_spectrograms.npy --labels-path outputs\ds006695_spectrograms_all19\y_labels.npy --metadata-path outputs\ds006695_spectrograms_all19\epoch_metadata.csv --output-dir outputs\ds006695_spectrograms_all19_channelmean
+```
+
+| Train source | Test target | Target balanced accuracy | Target macro F1 | Target N1 F1 |
+|---|---|---:|---:|---:|
+| Sleep-EDF first20 | `ds006695` channel mean | `0.3438` | `0.2864` | `0.1796` |
+| `ds006695` channel mean | Sleep-EDF first20 | `0.3792` | `0.3502` | `0.1162` |
+
+Decision: direct cross-dataset transfer is still poor even after matching the
+spectrogram tensor shape. This supports the report claim that the model learns
+useful within-corpus sleep-stage structure, but Sleep-EDF PSG and `ds006695`
+forehead EEG differ enough that transfer needs domain adaptation or fine-tuning,
+not naive source-only training.
+
 All extracted `ds006695` subjects are currently:
 
 ```text
