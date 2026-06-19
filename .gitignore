@@ -6,6 +6,19 @@ ds006695/
 ds006695_meta/
 sleep-edf/
 
+# Data files
+*.npy
+*.npz
+*.npz.zip
+checkpoint.npz.zip
+
+# LaTeX report (separate, not part of this project)
+LabReport_IEEE_Journal_Paper_Template/
+LabReport_IEEE_Journal_Paper_Template.zip
+
+# Legacy local folder
+sleep-stage-prediction/
+
 # Output files
 outputs/
 
@@ -34,3 +47,9 @@ Thumbs.db
 # IDE
 .vscode/
 .idea/
+
+# Testing
+.pytest_cache/
+
+# Models
+*.joblib
